@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import font as tkfont
-from tkinter import filedialog
+from tkinter import filedialog, ttk
 import os
 from calib import calib, app, extract, utils, plotting
 import plot as pt
@@ -132,19 +132,38 @@ class PageOne(tk.Frame):
         self.pack_propagate(False)
 
         def plot_points():
+            """
+            Plots extracted 3D points
+            """
             label = tk.Label(self, text=controller.project_dir, font=controller.normal_font, background="#ffffff")
             label.place(relx=0.5, rely=0.5, anchor="center")
-            f = Figure(figsize=(5,5), dpi=100)
+            f = Figure(figsize=(4,4), dpi=100)
             a = f.add_subplot(111, projection="3d")
             a.view_init(elev=20., azim=60)
-            parts = ["l_eye", "r_eye", "spine", "l_back_paw", "r_back_paw"]
+            parts = pt.get_bodyparts(controller.project_dir)
             for part in parts:
                 vals = pt.plot_skeleton(controller.project_dir, part)
-                a.scatter(vals[0][2],vals[1][2],vals[2][2])
+                a.scatter(vals[0][12],vals[1][12],vals[2][12])
 
             canvas = FigureCanvasTkAgg(f, self)
             canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
-            canvas._tkcanvas.place(relx=0.5, rely=0.5, anchor="center")
+            canvas._tkcanvas.place(relx=0.5, rely=0.45, anchor="center")
+            combo.configure(values=parts)
+            combo2.configure(values=parts)
+        
+        combo = ttk.Combobox(self, values=["Empty"])
+        combo.place(relx=0.3,rely=0.8, anchor = "center")
+        combo2 = ttk.Combobox(self, values=["Empty"])
+        combo2.place(relx=0.6,rely=0.8, anchor = "center")
+        
+        def make_link():
+            """
+            Makes a link between the two defined bodyparts
+            """
+            pass
+
+        button_link = tk.Button(self, text="Make Link", command=make_link)
+        button_link.place(relx=0.8, rely=0.8, anchor="center")
 
         label = tk.Label(self, text="Build", font=controller.title_font, background="#ffffff")
         label.place(relx=0, rely=0)
