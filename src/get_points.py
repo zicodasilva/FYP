@@ -36,7 +36,8 @@ def plot_skeleton(project_dir, part):
     
     #print(points_2d_df)
     #print(points_2d_df[points_2d_df['frame']==160])
-    return([nose_pts[:,0], nose_pts[:,1], nose_pts[:,2]])
+    #return([nose_pts[:,0], nose_pts[:,1], nose_pts[:,2]])
+    return(x_est, y_est, z_est)
 
 def get_bodyparts(project_dir):
     """
@@ -46,8 +47,9 @@ def get_bodyparts(project_dir):
     df_paths = sorted(glob.glob(os.path.join(project_dir, '*.h5')))
     points_2d_df = utils.create_dlc_points_2d_file(df_paths)
     arr = points_2d_df[points_2d_df["frame"]==0][["marker"]][points_2d_df["camera"]==0].values
-    print(arr.flatten().tolist())
-    return(arr.flatten().tolist())
+    final_arr = arr.flatten().tolist()
+    return(final_arr)
 
 if __name__=="__main__":
     get_bodyparts("C://Users/user-pc/Documents/Scripts/FYP/data")
+    

@@ -3,7 +3,7 @@ from tkinter import font as tkfont
 from tkinter import filedialog, ttk
 import os
 from calib import calib, app, extract, utils, plotting
-import plot as pt
+import get_points as pt
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -31,6 +31,7 @@ class Application(tk.Tk):
         nav_bar.pack_propagate(False)
         nav_bar.place(relx=0, rely=0)
         container.place(x=150,y=0)
+        
         self.home_label = tk.Label(nav_bar, text="Home", font=self.title_font, bg="#2c3e50", fg="#ffffff", width=150, cursor="hand2")
         self.home_label.place(relx=0.5, y=30, anchor="center")
         self.build_label = tk.Label(nav_bar, text="Build", font=self.title_font, bg="#2c3e50", fg="#ffffff", width=150, cursor="hand2")
@@ -131,44 +132,119 @@ class PageOne(tk.Frame):
         self.controller = controller
         self.pack_propagate(False)
 
-        def plot_points():
-            """
-            Plots extracted 3D points
-            """
-            label = tk.Label(self, text=controller.project_dir, font=controller.normal_font, background="#ffffff")
-            label.place(relx=0.5, rely=0.5, anchor="center")
-            f = Figure(figsize=(4,4), dpi=100)
-            a = f.add_subplot(111, projection="3d")
-            a.view_init(elev=20., azim=60)
-            parts = pt.get_bodyparts(controller.project_dir)
-            for part in parts:
-                vals = pt.plot_skeleton(controller.project_dir, part)
-                a.scatter(vals[0][12],vals[1][12],vals[2][12])
+        f = Figure(figsize=(4,4), dpi=100)
+        a = f.add_subplot(111, projection="3d")
+        a.view_init(elev=20., azim=60)
+        frame_no = 30
 
-            canvas = FigureCanvasTkAgg(f, self)
-            canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
-            canvas._tkcanvas.place(relx=0.5, rely=0.45, anchor="center")
-            combo.configure(values=parts)
-            combo2.configure(values=parts)
-        
+        canvas = FigureCanvasTkAgg(f, self)
+        canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+        canvas._tkcanvas.place(relx=0.5, rely=0.45, anchor="center")
+        parts_dict = {}
+        points_dict = {}
+
+        label_plus = tk.Label(self, text="+", font=controller.title_font, background="#ffffff")
+        label_plus.place(relx=0.45, rely=0.8, anchor = "center")
+
         combo = ttk.Combobox(self, values=["Empty"])
         combo.place(relx=0.3,rely=0.8, anchor = "center")
         combo2 = ttk.Combobox(self, values=["Empty"])
         combo2.place(relx=0.6,rely=0.8, anchor = "center")
+        combo_move = ttk.Combobox(self, values=["Empty"])
+        combo_move.place(relx=0.2,rely=0.4, anchor = "center")
+
+        def update_canvas():
+            """
+            Replots canvas on the GUI with updated points
+            """
+            canvas = FigureCanvasTkAgg(f, self)
+            canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+            canvas._tkcanvas.place(relx=0.5, rely=0.45, anchor="center")
+
+        def plot_points():
+            """
+            Plots extracted 3D points
+            """
+            #label = tk.Label(self, text=controller.project_dir, font=controller.normal_font, background="#ffffff")
+            #label.place(relx=0.5, rely=0.5, anchor="center")
+            parts = pt.get_bodyparts(controller.project_dir)
+
+            for part in parts:
+                vals = pt.plot_skeleton(controller.project_dir, part)
+                parts_dict[part] = [vals[0][frame_no],vals[1][frame_no],vals[2][frame_no]]
+                #points_dict[part] = a.scatter(parts_dict[part][0],parts_dict[part][1],parts_dict[part][2])
+                #update_canvas()
+            
+            combo.configure(values=parts)
+            combo2.configure(values=parts)
+            combo_move.configure(values=parts)
         
         def make_link():
             """
             Makes a link between the two defined bodyparts
             """
-            pass
+            part1 = combo.get()
+            part2 = combo2.get()
+            a.plot3D([parts_dict[part1][0], parts_dict[part2][0]],
+             [parts_dict[part1][1], parts_dict[part2][1]], 
+             [parts_dict[part1][2], parts_dict[part2][2]], 'b')
+            update_canvas()
+        
+        def rotate_right():
+            """
+            Rotates the axes right
+            """
+            azimuth = a.azim
+            a.view_init(elev=20., azim=azimuth+10)
+            update_canvas()
+        
+        def rotate_left():
+            """
+            Rotates the axes left
+            """
+            azimuth = a.azim
+            a.view_init(elev=20., azim=azimuth-10)
+            update_canvas()
+        
+        def move_point():
+            """
+            Moves the selected point to the defined x, y, z
+            """
+            part_to_move = combo_move.get()
+
+            if part_to_move in points_dict:
+                point_to_move = points_dict[part_to_move]
+                point_to_move.remove()
+
+            new_x = float(x_spin.get())
+            new_y = float(y_spin.get())
+            new_z = float(z_spin.get())
+            points_dict[part_to_move] = a.scatter(new_x,new_y, new_z)
+            parts_dict[part_to_move] = [new_x, new_y, new_z]
+            update_canvas()
+
+        x_spin = tk.Spinbox(self, from_=0, to=10, increment=0.05)
+        x_spin.place(relx=0.2, rely=0.45, anchor="center")
+        y_spin = tk.Spinbox(self, from_=0, to=10, increment=0.05)
+        y_spin.place(relx=0.2, rely=0.5, anchor="center")
+        z_spin = tk.Spinbox(self, from_=0, to=10, increment=0.05)
+        z_spin.place(relx=0.2, rely=0.55, anchor="center")
+
+        button_update = tk.Button(self, text="Place", command=move_point)
+        button_update.place(relx=0.2, rely=0.6, anchor="center")
 
         button_link = tk.Button(self, text="Make Link", command=make_link)
         button_link.place(relx=0.8, rely=0.8, anchor="center")
 
         label = tk.Label(self, text="Build", font=controller.title_font, background="#ffffff")
         label.place(relx=0, rely=0)
-        button = tk.Button(self, text="Plot", command=plot_points)
+        button = tk.Button(self, text="Get Points", command=plot_points)
         button.place(relx=0.5, rely=0.1, anchor="center")
+
+        button_right = tk.Button(self, text="Right", command=rotate_right)
+        button_right.place(relx=0.8, rely=0.3, anchor="center")
+        button_left = tk.Button(self, text="Left", command=rotate_left)
+        button_left.place(relx=0.8, rely=0.4, anchor="center")
 
 class PageTwo(tk.Frame):
 
