@@ -1,3 +1,4 @@
+from os import link
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import filedialog, ttk
@@ -9,6 +10,7 @@ matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import Axes3D
+import pickle
 
 class Application(tk.Tk):
 
@@ -22,9 +24,6 @@ class Application(tk.Tk):
         self.normal_font = tkfont.Font(family='Montserrat', size=12)
         self.project_dir = "No project folder chosen"
 
-        # the container is where we'll stack a bunch of frames
-        # on top of each other, then the one we want visible
-        # will be raised above the others
         container = tk.Frame(self, width=1130, height=720)
         nav_bar = tk.Frame(self, width=150, height=720, background="#2c3e50")
         container.pack_propagate(False)
@@ -57,9 +56,6 @@ class Application(tk.Tk):
             frame = F(parent=container, controller=self)
             self.frames[page_name] = frame
 
-            # put all of the pages in the same location;
-            # the one on the top of the stacking order
-            # will be the one that is visible.
             frame.place(x=0,y=0)
 
         self.show_frame("StartPage")
@@ -106,9 +102,9 @@ class StartPage(tk.Frame):
         tk.Frame.__init__(self, parent, height=720, width=1130, bg="#ffffff")
         self.controller = controller
         self.pack_propagate(False)
-        label_folder = tk.Label(self, text=controller.project_dir, font=controller.normal_font, bg="#ffffff")
-        label_folder.place(relx=0.5, rely=0.55, anchor="center")
         
+        # --- Define functions to be used by GUI components ---
+
         def choose_folder():
             currdir = os.getcwd()
             controller.project_dir = filedialog.askdirectory(parent=self, initialdir=currdir, title='Please Select a Project Folder:')
@@ -116,6 +112,10 @@ class StartPage(tk.Frame):
                 print("You chose %s" % controller.project_dir)
                 label_folder.configure(text=controller.project_dir)
         
+        # --- Define and place GUI components ---
+
+        label_folder = tk.Label(self, text=controller.project_dir, font=controller.normal_font, bg="#ffffff")
+        label_folder.place(relx=0.5, rely=0.55, anchor="center")
         label = tk.Label(self, text="Home", font=controller.title_font, bg="#ffffff")
         label.place(relx=0.5, rely=0.1, anchor="center")
         button1 = tk.Button(self, text="Choose Project Folder", command=choose_folder)
@@ -132,28 +132,27 @@ class PageOne(tk.Frame):
         self.controller = controller
         self.pack_propagate(False)
 
+        # --- Initialise class-wide variables ---
+
         f = Figure(figsize=(4,4), dpi=100)
         a = f.add_subplot(111, projection="3d")
         a.view_init(elev=20., azim=60)
         frame_no = 30
+        x_free = tk.IntVar()
+        y_free = tk.IntVar()
+        z_free = tk.IntVar()
 
         canvas = FigureCanvasTkAgg(f, self)
         canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
         canvas._tkcanvas.place(relx=0.5, rely=0.45, anchor="center")
         parts_dict = {}
         points_dict = {}
+        dof_dict = {}
+        links_list = []
 
-        label_plus = tk.Label(self, text="+", font=controller.title_font, background="#ffffff")
-        label_plus.place(relx=0.45, rely=0.8, anchor = "center")
+        # --- Define functions to be used by GUI components ---
 
-        combo = ttk.Combobox(self, values=["Empty"])
-        combo.place(relx=0.3,rely=0.8, anchor = "center")
-        combo2 = ttk.Combobox(self, values=["Empty"])
-        combo2.place(relx=0.6,rely=0.8, anchor = "center")
-        combo_move = ttk.Combobox(self, values=["Empty"])
-        combo_move.place(relx=0.2,rely=0.4, anchor = "center")
-
-        def update_canvas():
+        def update_canvas() -> None:
             """
             Replots canvas on the GUI with updated points
             """
@@ -161,7 +160,7 @@ class PageOne(tk.Frame):
             canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
             canvas._tkcanvas.place(relx=0.5, rely=0.45, anchor="center")
 
-        def plot_points():
+        def plot_points() -> None:
             """
             Plots extracted 3D points
             """
@@ -179,18 +178,23 @@ class PageOne(tk.Frame):
             combo2.configure(values=parts)
             combo_move.configure(values=parts)
         
-        def make_link():
+        def make_link() -> None:
             """
             Makes a link between the two defined bodyparts
             """
             part1 = combo.get()
             part2 = combo2.get()
+            part_to_move = combo_move.get()
+
             a.plot3D([parts_dict[part1][0], parts_dict[part2][0]],
              [parts_dict[part1][1], parts_dict[part2][1]], 
              [parts_dict[part1][2], parts_dict[part2][2]], 'b')
+
+            link_arr = [part1, part2]
+            links_list.append(link_arr)
             update_canvas()
         
-        def rotate_right():
+        def rotate_right() -> None:
             """
             Rotates the axes right
             """
@@ -198,7 +202,7 @@ class PageOne(tk.Frame):
             a.view_init(elev=20., azim=azimuth+10)
             update_canvas()
         
-        def rotate_left():
+        def rotate_left() -> None:
             """
             Rotates the axes left
             """
@@ -206,9 +210,9 @@ class PageOne(tk.Frame):
             a.view_init(elev=20., azim=azimuth-10)
             update_canvas()
         
-        def move_point():
+        def move_point() -> None:
             """
-            Moves the selected point to the defined x, y, z
+            Moves/places the selected point to the defined x, y, z
             """
             part_to_move = combo_move.get()
 
@@ -219,9 +223,45 @@ class PageOne(tk.Frame):
             new_x = float(x_spin.get())
             new_y = float(y_spin.get())
             new_z = float(z_spin.get())
+
             points_dict[part_to_move] = a.scatter(new_x,new_y, new_z)
             parts_dict[part_to_move] = [new_x, new_y, new_z]
+            dof_dict[part_to_move] = [int(x_free.get()), int(y_free.get()), int(z_free.get())]
+
             update_canvas()
+
+        def save_skeleton() -> None:
+            """
+            Writes the currently built skeleton to a pickle file
+            """
+            currdir = os.getcwd()
+            dof_dict["links"] = links_list
+            skel_name = (field_name.get())
+            output_dir = os.path.join(currdir, "skeletons", (skel_name + ".pickle"))
+            print(output_dir)
+            print(dof_dict)
+
+            # Write to pickle file
+            with open(output_dir, 'wb') as f:
+                pickle.dump(dof_dict, f)
+
+        # --- Define and place GUI components ---
+
+        label_name = tk.Label(self, text="Enter skeleton name: ", font=controller.normal_font, background="#ffffff")
+        label_name.place(relx=0.4, rely=0.15, anchor = "center")
+
+        field_name = tk.Entry(self)
+        field_name.place(relx=0.6, rely=0.15, anchor="center")
+
+        label_plus = tk.Label(self, text="+", font=controller.title_font, background="#ffffff")
+        label_plus.place(relx=0.45, rely=0.8, anchor = "center")
+
+        combo = ttk.Combobox(self, values=["Empty"])
+        combo.place(relx=0.3,rely=0.8, anchor = "center")
+        combo2 = ttk.Combobox(self, values=["Empty"])
+        combo2.place(relx=0.6,rely=0.8, anchor = "center")
+        combo_move = ttk.Combobox(self, values=["Empty"])
+        combo_move.place(relx=0.2,rely=0.4, anchor = "center")
 
         x_spin = tk.Spinbox(self, from_=0, to=10, increment=0.05)
         x_spin.place(relx=0.2, rely=0.45, anchor="center")
@@ -229,6 +269,26 @@ class PageOne(tk.Frame):
         y_spin.place(relx=0.2, rely=0.5, anchor="center")
         z_spin = tk.Spinbox(self, from_=0, to=10, increment=0.05)
         z_spin.place(relx=0.2, rely=0.55, anchor="center")
+
+        label_x = tk.Label(self, text="x: ", font=controller.normal_font, background="#ffffff")
+        label_x.place(relx=0.13, rely=0.45, anchor="center")
+        label_y = tk.Label(self, text="y: ", font=controller.normal_font, background="#ffffff")
+        label_y.place(relx=0.13, rely=0.5, anchor="center")
+        label_z = tk.Label(self, text="z: ", font=controller.normal_font, background="#ffffff")
+        label_z.place(relx=0.13, rely=0.55, anchor="center")
+
+        label_dof = tk.Label(self, text="Degrees of Freedom", font=controller.normal_font, background="#ffffff")
+        label_dof.place(relx=0.2, rely=0.27, anchor="center")
+
+        x_check = tk.Checkbutton(self, text = "x", variable = x_free, \
+                 onvalue = 1, offvalue = 0, bg = "#ffffff")
+        x_check.place(relx = 0.15, rely = 0.3, anchor="center")
+        y_check = tk.Checkbutton(self, text = "y", variable = y_free, \
+                 onvalue = 1, offvalue = 0, bg = "#ffffff")
+        y_check.place(relx = 0.2, rely = 0.3, anchor="center")
+        z_check = tk.Checkbutton(self, text = "z", variable = z_free, \
+                 onvalue = 1, offvalue = 0, bg = "#ffffff")
+        z_check.place(relx = 0.25, rely = 0.3, anchor="center")
 
         button_update = tk.Button(self, text="Place", command=move_point)
         button_update.place(relx=0.2, rely=0.6, anchor="center")
@@ -238,13 +298,16 @@ class PageOne(tk.Frame):
 
         label = tk.Label(self, text="Build", font=controller.title_font, background="#ffffff")
         label.place(relx=0, rely=0)
-        button = tk.Button(self, text="Get Points", command=plot_points)
+        button = tk.Button(self, text="Load Points", command=plot_points)
         button.place(relx=0.5, rely=0.1, anchor="center")
 
         button_right = tk.Button(self, text="Right", command=rotate_right)
         button_right.place(relx=0.8, rely=0.3, anchor="center")
         button_left = tk.Button(self, text="Left", command=rotate_left)
         button_left.place(relx=0.8, rely=0.4, anchor="center")
+
+        button_save = tk.Button(self, text="Save Model", command=save_skeleton)
+        button_save.place(relx=0.5, rely=0.9, anchor="center")
 
 class PageTwo(tk.Frame):
 
