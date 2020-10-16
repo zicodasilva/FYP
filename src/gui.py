@@ -142,12 +142,10 @@ class PageOne(tk.Frame):
         y_free = tk.IntVar()
         z_free = tk.IntVar()
 
-        canvas = FigureCanvasTkAgg(f, self)
-        canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
-        canvas._tkcanvas.place(relx=0.5, rely=0.45, anchor="center")
         parts_dict = {}
         points_dict = {}
         dof_dict = {}
+        skel_dict = {}
         links_list = []
 
         # --- Define functions to be used by GUI components ---
@@ -170,7 +168,7 @@ class PageOne(tk.Frame):
 
             for part in parts:
                 vals = pt.plot_skeleton(controller.project_dir, part)
-                parts_dict[part] = [vals[0][frame_no],vals[1][frame_no],vals[2][frame_no]]
+                #parts_dict[part] = [vals[0][frame_no],vals[1][frame_no],vals[2][frame_no]]
                 #points_dict[part] = a.scatter(parts_dict[part][0],parts_dict[part][1],parts_dict[part][2])
                 #update_canvas()
             
@@ -235,17 +233,22 @@ class PageOne(tk.Frame):
             Writes the currently built skeleton to a pickle file
             """
             currdir = os.getcwd()
-            dof_dict["links"] = links_list
             skel_name = (field_name.get())
             output_dir = os.path.join(currdir, "skeletons", (skel_name + ".pickle"))
-            print(output_dir)
-            print(dof_dict)
 
-            # Write to pickle file
+            skel_dict["links"] = links_list
+            skel_dict["dofs"] = dof_dict
+            skel_dict["positions"] = parts_dict
+
+            print(output_dir)
+            print(skel_dict)
+
             with open(output_dir, 'wb') as f:
-                pickle.dump(dof_dict, f)
+                pickle.dump(skel_dict, f)
 
         # --- Define and place GUI components ---
+
+        update_canvas()
 
         label_name = tk.Label(self, text="Enter skeleton name: ", font=controller.normal_font, background="#ffffff")
         label_name.place(relx=0.4, rely=0.15, anchor = "center")
