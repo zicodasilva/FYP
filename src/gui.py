@@ -168,6 +168,7 @@ class PageOne(tk.Frame):
 
             for part in parts:
                 vals = pt.plot_skeleton(controller.project_dir, part)
+
                 #parts_dict[part] = [vals[0][frame_no],vals[1][frame_no],vals[2][frame_no]]
                 #points_dict[part] = a.scatter(parts_dict[part][0],parts_dict[part][1],parts_dict[part][2])
                 #update_canvas()
@@ -239,6 +240,14 @@ class PageOne(tk.Frame):
             skel_dict["links"] = links_list
             skel_dict["dofs"] = dof_dict
             skel_dict["positions"] = parts_dict
+            marker_arr = []
+
+            markers =  pt.get_bodyparts(controller.project_dir)
+            for part in parts_dict:
+                if part in markers:
+                    marker_arr.append(part)
+                
+            skel_dict["markers"] = marker_arr
 
             print(output_dir)
             print(skel_dict)

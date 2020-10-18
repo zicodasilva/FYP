@@ -1,12 +1,20 @@
 from typing import Dict
-import pyomo
 import pickle
-from pyomo.core.base.PyomoModel import ConcreteModel
 import sympy as sp
 import numpy as np
+import os
+import glob
+import cv2
+import sys
+from calib import utils, calib, plotting, app, extract
+from scipy import stats
+from pprint import pprint
 from pyomo.environ import *
 from pyomo.opt import SolverFactory
 from pyomo.opt import SolverStatus, TerminationCondition
+from pyomo.core.base.PyomoModel import ConcreteModel
+
+pose_to_3d = []
 
 def load_skeleton(skel_file) -> Dict:
     """
@@ -17,13 +25,14 @@ def load_skeleton(skel_file) -> Dict:
 
     return skel_dict
 
-def build_model(skel_dict) -> ConcreteModel:
+def build_model(skel_dict, project_dir) -> ConcreteModel:
     """
     Builds a pyomo model from a given saved skeleton dictionary
     """
     links = skel_dict["links"]
     positions = skel_dict["positions"]
     dofs = skel_dict["dofs"]
+    markers = skel_dict["markers"]
     rot_dict = {}
     pose_dict = {}
     L = len(positions)
@@ -73,8 +82,307 @@ def build_model(skel_dict) -> ConcreteModel:
     for i in range(t_poses_mat.shape[0]):
         lamb = sp.lambdify(sym_list, t_poses_mat[i,:], modules=[func_map])
         pos_funcs.append(lamb)
+    
+    scene_path = os.path.join(project_dir, "scene_sba.json")
 
-    return(t_poses_mat)
+    K_arr, D_arr, R_arr, t_arr, _ = utils.load_scene(scene_path)
+    D_arr = D_arr.reshape((-1,4))
+
+    markers_dict = dict(enumerate(markers))
+
+    print(f"\n\n\nLoading data")
+
+    df_paths = sorted(glob.glob(os.path.join(project_dir, '*.h5')))
+    points_2d_df = utils.create_dlc_points_2d_file(df_paths)
+
+    def get_meas_from_df(n, c, l, d):
+        n_mask = points_2d_df["frame"]== n-1
+        l_mask = points_2d_df["marker"]== markers[l-1]
+        c_mask = points_2d_df["camera"]== c-1
+        d_idx = {1:"x", 2:"y"}
+        val = points_2d_df[n_mask & l_mask & c_mask]
+        return val[d_idx[d]].values[0]
+
+    def get_likelihood_from_df(n, c, l):
+        n_mask = points_2d_df["frame"]== n-1
+        l_mask = points_2d_df["marker"]== markers[l-1]
+        c_mask = points_2d_df["camera"]== c-1
+        val = points_2d_df[n_mask & l_mask & c_mask]
+        return val["likelihood"].values[0]
+    
+    h = 1/120 #timestep
+    start_frame = 0 # 50
+    N = 100
+    P = 3 + len(phi)+len(theta)+len(psi)
+    L = len(pos_funcs)
+    C = len(K_arr)
+    D2 = 2
+    D3 = 3
+
+    proj_funcs = [pt3d_to_x2d, pt3d_to_y2d]
+
+    R = 5 # measurement standard deviation
+    Q = np.array([ # model parameters variance
+        4.0,
+        7.0,
+        5.0,
+        13.0,
+        32.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        9.0,
+        18.0,
+        43.0,
+        53.0,
+        90.0,
+        118.0,
+        247.0,
+        186.0,
+        194.0,
+        164.0,
+        295.0,
+        243.0,
+        334.0,
+        149.0,
+        26.0,
+        12.0,
+        0.0,
+        34.0,
+        43.0,
+        51.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ])**2
+
+    triangulate_func = calib.triangulate_points_fisheye
+    points_2d_filtered_df = points_2d_df[points_2d_df['likelihood']>0.5]
+    points_3d_df = calib.get_pairwise_3d_points_from_df(points_2d_filtered_df, K_arr, D_arr, R_arr, t_arr, triangulate_func)
+
+    # estimate initial points
+    nose_pts = points_3d_df[points_3d_df["marker"]=="nose"][["x", "y", "z", "frame"]].values
+    x_slope, x_intercept, *_ = stats.linregress(nose_pts[:,3], nose_pts[:,0])
+    y_slope, y_intercept, *_ = stats.linregress(nose_pts[:,3], nose_pts[:,1])
+    z_slope, z_intercept, *_ = stats.linregress(nose_pts[:,3], nose_pts[:,2])
+    frame_est = np.arange(N)
+    x_est = frame_est*x_slope + x_intercept
+    y_est = frame_est*y_slope + y_intercept
+    z_est = frame_est*z_slope + z_intercept
+    psi_est = np.arctan2(y_slope, x_slope)
+    
+    print("Started Optimisation")
+    m = ConcreteModel(name = "Cheetah from measurements")
+
+    # ===== SETS =====
+    m.N = RangeSet(N) #number of timesteps in trajectory
+    m.P = RangeSet(P) #number of pose parameters (x, y, z, phi_1..n, theta_1..n, psi_1..n)
+    m.L = RangeSet(L) #number of labels
+    m.C = RangeSet(C) #number of cameras
+    m.D2 = RangeSet(D2) #dimensionality of measurements
+    m.D3 = RangeSet(D3) #dimensionality of measurements
+
+    def init_meas_weights(model, n, c, l):
+        likelihood = get_likelihood_from_df(n+start_frame, c, l)
+        if likelihood > 0.5:
+            return 1/R
+        else:
+            return 0
+    m.meas_err_weight = Param(m.N, m.C, m.L, initialize=init_meas_weights, mutable=True)  # IndexError: index 0 is out of bounds for axis 0 with size 0
+
+    def init_model_weights(m, p):
+        if Q[p-1] != 0.0:
+            return 1/Q[p-1]
+        else:
+            return 0
+    m.model_err_weight = Param(m.P, initialize=init_model_weights)
+
+    m.h = h
+
+    def init_measurements_df(m, n, c, l, d2):
+        return get_meas_from_df(n+start_frame, c, l, d2)
+    m.meas = Param(m.N, m.C, m.L, m.D2, initialize=init_measurements_df)
+
+    # ===== VARIABLES =====
+    m.x = Var(m.N, m.P) #position
+    m.dx = Var(m.N, m.P) #velocity
+    m.ddx = Var(m.N, m.P) #acceleration
+    m.poses = Var(m.N, m.L, m.D3)
+    m.slack_model = Var(m.N, m.P)
+    m.slack_meas = Var(m.N, m.C, m.L, m.D2, initialize=0.0)
+
+
+    # ===== VARIABLES INITIALIZATION =====
+    init_x = np.zeros((N-start_frame, P))
+    init_x[:,0] = x_est[start_frame: start_frame+N]#x
+    init_x[:,1] = y_est[start_frame: start_frame+N] #y
+    init_x[:,2] = z_est[start_frame: start_frame+N] #z
+    init_x[:,8] = psi_est #yaw - psi
+    init_dx = np.zeros((N, P))
+    init_ddx = np.zeros((N, P))
+    for n in range(1,N+1):
+        for p in range(1,P+1):
+            if n<len(init_x): #init using known values
+                m.x[n,p].value = init_x[n-1,p-1]
+                m.dx[n,p].value = init_dx[n-1,p-1]
+                m.ddx[n,p].value = init_ddx[n-1,p-1]
+            else: #init using last known value
+                m.x[n,p].value = init_x[-1,p-1]
+                m.dx[n,p].value = init_dx[-1,p-1]
+                m.ddx[n,p].value = init_ddx[-1,p-1]
+        #init pose
+        var_list = [m.x[n,p].value for p in range(1, P+1)]
+        for l in range(1,L+1):
+            [pos] = pos_funcs[l-1](*var_list)
+            for d3 in range(1,D3+1):
+                m.poses[n,l,d3].value = pos[d3-1]
+
+    # ===== CONSTRAINTS =====
+    # 3D POSE
+    def pose_constraint(m,n,l,d3):
+        #get 3d points
+        var_list = [m.x[n,p] for p in range(1, P+1)]
+        [pos] = pos_funcs[l-1](*var_list)
+        return pos[d3-1] == m.poses[n,l,d3]
+
+    
+    m.pose_constraint = Constraint(m.N, m.L, m.D3, rule=pose_constraint)
+
+    def backwards_euler_pos(m,n,p): # position
+        if n > 1:
+    #             return m.x[n,p] == m.x[n-1,p] + m.h*m.dx[n-1,p] + m.h**2 * m.ddx[n-1,p]/2
+            return m.x[n,p] == m.x[n-1,p] + m.h*m.dx[n,p]
+
+        else:
+            return Constraint.Skip
+    m.integrate_p = Constraint(m.N, m.P, rule = backwards_euler_pos)
+
+
+    def backwards_euler_vel(m,n,p): # velocity
+        if n > 1:
+            return m.dx[n,p] == m.dx[n-1,p] + m.h*m.ddx[n,p]
+        else:
+            return Constraint.Skip 
+    m.integrate_v = Constraint(m.N, m.P, rule = backwards_euler_vel)
+
+
+    # MODEL
+    def constant_acc(m, n, p):
+        if n > 1:
+            return m.ddx[n,p] == m.ddx[n-1,p] + m.slack_model[n,p]
+        else:
+            return Constraint.Skip 
+    m.constant_acc = Constraint(m.N, m.P, rule = constant_acc)
+
+    # MEASUREMENT 
+    def measurement_constraints(m, n, c, l, d2):
+        #project
+        K, D, R, t = K_arr[c-1], D_arr[c-1], R_arr[c-1], t_arr[c-1]
+        x, y, z = m.poses[n,l,1], m.poses[n,l,2], m.poses[n,l,3]
+        return proj_funcs[d2-1](x, y, z, K, D, R, t) - m.meas[n, c, l, d2] - m.slack_meas[n, c, l, d2] ==0
+    m.measurement = Constraint(m.N, m.C, m.L, m.D2, rule = measurement_constraints)
+
+    def obj(m):
+        slack_model_err = 0.0
+        slack_meas_err = 0.0
+        for n in range(1, N+1):
+            #Model Error
+            for p in range(1, P+1):
+                slack_model_err += m.model_err_weight[p] * m.slack_model[n, p] ** 2
+            #Measurement Error
+            for l in range(1, L+1):
+                for c in range (1, C+1):
+                    for d2 in range(1, D2+1):
+                        slack_meas_err += redescending_loss(m.meas_err_weight[n, c, l] * m.slack_meas[n, c, l, d2], 3, 10, 20)
+        return slack_meas_err + slack_model_err
+
+    m.obj = Objective(rule = obj)
+
+    return(m)
+
+def solve_optimisation(model, exe_path, project_dir) -> None:
+    """
+    Solves a given trajectory optimisation problem given a model and solver
+    """
+    opt = SolverFactory(
+        'ipopt',
+        executable=exe_path
+    )
+
+    # solver options
+    opt.options["print_level"] = 5
+    opt.options["max_iter"] = 10000
+    opt.options["max_cpu_time"] = 3600
+    opt.options["tol"] = 1e-1
+    opt.options["OF_print_timing_statistics"] = "yes"
+    opt.options["OF_print_frequency_iter"] = 10
+    opt.options["OF_hessian_approximation"] = "limited-memory"
+    # opt.options["linear_solver"] = "ma86"
+
+    LOG_DIR = '../logs'
+
+    # --- This step may take a while! ---
+    results = opt.solve(
+        model, tee=True, 
+        keepfiles=True, 
+        logfile=os.path.join(LOG_DIR, "solver.log")
+    )
+
+    result_dir = os.path.join(project_dir, "results")
+    save_data(model, file_path=os.path.join(result_dir, 'traj_results.pickle'))
+
+def save_data(file_data, filepath, dict=False):
+    if dict:
+        file_data = convert_to_dict(file_data)
+
+    with open(filepath, 'wb') as f:
+        pickle.dump(file_data, f)
+
+def convert_to_dict(m) -> Dict:
+    x_optimised = []
+    dx_optimised = []
+    ddx_optimised = []
+    for n in range(1, m.N+1):
+        x_optimised.append([value(m.x[n, p]) for p in range(1,m.P+1)])
+        dx_optimised.append([value(m.dx[n, p]) for p in range(1,m.P+1)])
+        ddx_optimised.append([value(m.ddx[n, p]) for p in range(1,m.P+1)])
+    x_optimised = np.array(x_optimised)
+    dx_optimised = np.array(dx_optimised)
+    ddx_optimised = np.array(ddx_optimised)
+    
+    positions = np.array([pose_to_3d(*states) for states in x_optimised])
+    file_data = dict(
+        positions=positions,
+        x=x_optimised,
+        dx=dx_optimised,
+        ddx=ddx_optimised,
+    )
+    return file_data
+
+def save_data(file_data, file_path, dict=False) -> None:
+    if dict:
+        file_data = convert_to_dict(file_data)
+        
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+    with open(file_path, 'wb') as f:
+        pickle.dump(file_data, f)
+    
+    print(f'save {file_path}')
 
 # --- OUTLIER REJECTING COST FUNCTION (REDESCENDING LOSS) ---
 
@@ -180,6 +488,6 @@ def pt3d_to_y2d(x, y, z, K, D, R, t):
     return v
 
 if __name__ == "__main__":
-    skelly = load_skeleton("C://Users//user-pc//Documents//Scripts//FYP//skeletons//plswork.pickle")
+    skelly = load_skeleton("C://Users//user-pc//Documents//Scripts//FYP//skeletons//marker_test.pickle")
     print(skelly)
-    print(build_model(skelly))
+    print(build_model(skelly, "C://Users//user-pc//Documents//Scripts//FYP//data"))
