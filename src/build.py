@@ -1,5 +1,6 @@
 from typing import Dict
 import pickle
+from pyomo.core.base.constraint import ConstraintList
 import sympy as sp
 import numpy as np
 import os
@@ -41,16 +42,18 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
     theta   = [sp.symbols(f"\\theta_{{{l}}}") for l in range(L)]
     psi     = [sp.symbols(f"\\psi_{{{l}}}")   for l in range(L)]
 
+    i=0
     for part in dofs:
         rot_dict[part] = sp.eye(3)
         if dofs[part][1]:
-            rot_dict[part] = rot_y(theta[0]) @ rot_dict[part]
+            rot_dict[part] = rot_y(theta[i]) @ rot_dict[part]
         if dofs[part][0]:
-            rot_dict[part] = rot_x(phi[0]) @ rot_dict[part]
+            rot_dict[part] = rot_x(phi[i]) @ rot_dict[part]
         if dofs[part][2]:
-            rot_dict[part] = rot_z(psi[0]) @ rot_dict[part]
+            rot_dict[part] = rot_z(psi[i]) @ rot_dict[part]
         
         rot_dict[part + "_i"] = rot_dict[part].T
+        i+=1
     
     x,   y,   z   = sp.symbols("x y z")
     dx,  dy,  dz  = sp.symbols("\\dot{x} \\dot{y} \\dot{z}")
@@ -66,6 +69,8 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
             translation_vec = sp.Matrix([positions[link[1]][0] - positions[link[0]][0],
                  positions[link[1]][1] - positions[link[0]][1],
                  positions[link[1]][2] - positions[link[0]][2]])
+            rot_dict[link[1]] = rot_dict[link[1]] @ rot_dict[link[0]]
+            rot_dict[link[1]+"_i"] = rot_dict[link[1]+"_i"].T
             pose_dict[link[1]] = pose_dict[link[0]] + rot_dict[link[0] + "_i"] @ translation_vec
     
     t_poses = []
@@ -111,7 +116,7 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
         return val["likelihood"].values[0]
     
     h = 1/120 #timestep
-    start_frame = 0 # 50
+    start_frame = 40 # 50
     N = 100
     P = 3 + len(phi)+len(theta)+len(psi)
     L = len(pos_funcs)
@@ -167,7 +172,7 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
         0.0,
         0.0,
         0.0,
-        0.0,
+        0.0
     ])**2
 
     triangulate_func = calib.triangulate_points_fisheye
@@ -205,10 +210,10 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
     m.meas_err_weight = Param(m.N, m.C, m.L, initialize=init_meas_weights, mutable=True)  # IndexError: index 0 is out of bounds for axis 0 with size 0
 
     def init_model_weights(m, p):
-        if Q[p-1] != 0.0:
-            return 1/Q[p-1]
-        else:
-            return 0
+        #if Q[p-1] != 0.0:
+            #return 1/Q[p-1]
+        #else:
+        return 1.0
     m.model_err_weight = Param(m.P, initialize=init_model_weights)
 
     m.h = h
@@ -231,7 +236,7 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
     init_x[:,0] = x_est[start_frame: start_frame+N]#x
     init_x[:,1] = y_est[start_frame: start_frame+N] #y
     init_x[:,2] = z_est[start_frame: start_frame+N] #z
-    init_x[:,8] = psi_est #yaw - psi
+    #init_x[:,(3+len(pos_funcs)*2)] = psi_est #yaw - psi
     init_dx = np.zeros((N, P))
     init_ddx = np.zeros((N, P))
     for n in range(1,N+1):
@@ -279,6 +284,10 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
             return Constraint.Skip 
     m.integrate_v = Constraint(m.N, m.P, rule = backwards_euler_vel)
 
+    m.angs = ConstraintList()
+    for n in range(1,N):
+        for i in range(3, 3*len(positions)):
+            m.angs.add(expr=(abs(m.x[n,i]) <= np.pi/1.5))
 
     # MODEL
     def constant_acc(m, n, p):
@@ -331,9 +340,9 @@ def solve_optimisation(model, exe_path, project_dir) -> None:
     opt.options["OF_print_timing_statistics"] = "yes"
     opt.options["OF_print_frequency_iter"] = 10
     opt.options["OF_hessian_approximation"] = "limited-memory"
-    # opt.options["linear_solver"] = "ma86"
+    #opt.options["linear_solver"] = "ma86"
 
-    LOG_DIR = '../logs'
+    LOG_DIR = 'C://Users//user-pc//Documents//Scripts//FYP//logs'
 
     # --- This step may take a while! ---
     results = opt.solve(
@@ -345,26 +354,26 @@ def solve_optimisation(model, exe_path, project_dir) -> None:
     result_dir = os.path.join(project_dir, "results")
     save_data(model, file_path=os.path.join(result_dir, 'traj_results.pickle'))
 
-def save_data(file_data, filepath, dict=False):
-    if dict:
-        file_data = convert_to_dict(file_data)
+#def save_data(file_data, filepath, dict=False):
+    #if dict:
+        #file_data = convert_to_dict(file_data)
 
-    with open(filepath, 'wb') as f:
-        pickle.dump(file_data, f)
+    #with open(filepath, 'wb') as f:
+        #pickle.dump(file_data, f)
 
 def convert_to_dict(m) -> Dict:
     x_optimised = []
     dx_optimised = []
     ddx_optimised = []
-    for n in range(1, m.N+1):
-        x_optimised.append([value(m.x[n, p]) for p in range(1,m.P+1)])
-        dx_optimised.append([value(m.dx[n, p]) for p in range(1,m.P+1)])
-        ddx_optimised.append([value(m.ddx[n, p]) for p in range(1,m.P+1)])
+    for n in range(1, len(m.N)+1):
+        x_optimised.append([value(m.x[n, p]) for p in range(1,len(m.P)+1)])
+        dx_optimised.append([value(m.dx[n, p]) for p in range(1,len(m.P)+1)])
+        ddx_optimised.append([value(m.ddx[n, p]) for p in range(1,len(m.P)+1)])
     x_optimised = np.array(x_optimised)
     dx_optimised = np.array(dx_optimised)
     ddx_optimised = np.array(ddx_optimised)
     
-    positions = np.array([pose_to_3d(*states) for states in x_optimised])
+    positions = np.array([pose_to_3d[int(states)] for states in x_optimised])
     file_data = dict(
         positions=positions,
         x=x_optimised,
@@ -373,7 +382,7 @@ def convert_to_dict(m) -> Dict:
     )
     return file_data
 
-def save_data(file_data, file_path, dict=False) -> None:
+def save_data(file_data, file_path, dict=True) -> None:
     if dict:
         file_data = convert_to_dict(file_data)
         
@@ -488,6 +497,7 @@ def pt3d_to_y2d(x, y, z, K, D, R, t):
     return v
 
 if __name__ == "__main__":
-    skelly = load_skeleton("C://Users//user-pc//Documents//Scripts//FYP//skeletons//marker_test.pickle")
+    skelly = load_skeleton("C://Users//user-pc//Documents//Scripts//FYP//skeletons//cheetah_serious.pickle")
     print(skelly)
-    print(build_model(skelly, "C://Users//user-pc//Documents//Scripts//FYP//data"))
+    model1 = build_model(skelly, "C://Users//user-pc//Documents//Scripts//FYP//data")
+    solve_optimisation(model1, "C://Users//user-pc//anaconda3//pkgs//ipopt-3.11.1-2//Library//bin//ipopt.exe", "C://Users//user-pc//Documents//Scripts//FYP//data")

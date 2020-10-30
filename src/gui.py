@@ -275,11 +275,11 @@ class PageOne(tk.Frame):
         combo_move = ttk.Combobox(self, values=["Empty"])
         combo_move.place(relx=0.2,rely=0.4, anchor = "center")
 
-        x_spin = tk.Spinbox(self, from_=0, to=10, increment=0.05)
+        x_spin = tk.Spinbox(self, from_=-10, to=10, increment=0.01)
         x_spin.place(relx=0.2, rely=0.45, anchor="center")
-        y_spin = tk.Spinbox(self, from_=0, to=10, increment=0.05)
+        y_spin = tk.Spinbox(self, from_=-10, to=10, increment=0.01)
         y_spin.place(relx=0.2, rely=0.5, anchor="center")
-        z_spin = tk.Spinbox(self, from_=0, to=10, increment=0.05)
+        z_spin = tk.Spinbox(self, from_=-10, to=10, increment=0.01)
         z_spin.place(relx=0.2, rely=0.55, anchor="center")
 
         label_x = tk.Label(self, text="x: ", font=controller.normal_font, background="#ffffff")
