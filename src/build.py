@@ -5,8 +5,6 @@ import sympy as sp
 import numpy as np
 import os
 import glob
-import cv2
-import sys
 from calib import utils, calib, plotting, app, extract
 from scipy import stats
 from pprint import pprint
@@ -116,7 +114,7 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
         return val["likelihood"].values[0]
     
     h = 1/120 #timestep
-    start_frame = 40 # 50
+    start_frame = 80 # 50
     N = 100
     P = 3 + len(phi)+len(theta)+len(psi)
     L = len(pos_funcs)
@@ -213,7 +211,7 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
         #if Q[p-1] != 0.0:
             #return 1/Q[p-1]
         #else:
-        return 1.0
+        return 0.01
     m.model_err_weight = Param(m.P, initialize=init_model_weights)
 
     m.h = h
@@ -287,7 +285,7 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
     m.angs = ConstraintList()
     for n in range(1,N):
         for i in range(3, 3*len(positions)):
-            m.angs.add(expr=(abs(m.x[n,i]) <= np.pi/1.5))
+            m.angs.add(expr=(abs(m.x[n,i]) <= np.pi))
 
     # MODEL
     def constant_acc(m, n, p):
@@ -321,9 +319,9 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
 
     m.obj = Objective(rule = obj)
 
-    return(m)
+    return(m, pose_to_3d)
 
-def solve_optimisation(model, exe_path, project_dir) -> None:
+def solve_optimisation(model, exe_path, project_dir, poses) -> None:
     """
     Solves a given trajectory optimisation problem given a model and solver
     """
@@ -334,7 +332,7 @@ def solve_optimisation(model, exe_path, project_dir) -> None:
 
     # solver options
     opt.options["print_level"] = 5
-    opt.options["max_iter"] = 10000
+    opt.options["max_iter"] = 400
     opt.options["max_cpu_time"] = 3600
     opt.options["tol"] = 1e-1
     opt.options["OF_print_timing_statistics"] = "yes"
@@ -352,7 +350,7 @@ def solve_optimisation(model, exe_path, project_dir) -> None:
     )
 
     result_dir = os.path.join(project_dir, "results")
-    save_data(model, file_path=os.path.join(result_dir, 'traj_results.pickle'))
+    save_data(model, file_path=os.path.join(result_dir, 'traj_results.pickle'), poses=poses)
 
 #def save_data(file_data, filepath, dict=False):
     #if dict:
@@ -361,19 +359,22 @@ def solve_optimisation(model, exe_path, project_dir) -> None:
     #with open(filepath, 'wb') as f:
         #pickle.dump(file_data, f)
 
-def convert_to_dict(m) -> Dict:
+def convert_to_dict(m, poses) -> Dict:
     x_optimised = []
     dx_optimised = []
     ddx_optimised = []
-    for n in range(1, len(m.N)+1):
-        x_optimised.append([value(m.x[n, p]) for p in range(1,len(m.P)+1)])
-        dx_optimised.append([value(m.dx[n, p]) for p in range(1,len(m.P)+1)])
-        ddx_optimised.append([value(m.ddx[n, p]) for p in range(1,len(m.P)+1)])
+    for n in m.N:
+        x_optimised.append([value(m.x[n, p]) for p in m.P])
+        dx_optimised.append([value(m.dx[n, p]) for p in m.P])
+        ddx_optimised.append([value(m.ddx[n, p]) for p in m.P])
     x_optimised = np.array(x_optimised)
     dx_optimised = np.array(dx_optimised)
     ddx_optimised = np.array(ddx_optimised)
+
+    print(poses)
+    print(x_optimised)
     
-    positions = np.array([pose_to_3d[int(states)] for states in x_optimised])
+    positions = np.array([poses(*states) for states in x_optimised])
     file_data = dict(
         positions=positions,
         x=x_optimised,
@@ -382,9 +383,10 @@ def convert_to_dict(m) -> Dict:
     )
     return file_data
 
-def save_data(file_data, file_path, dict=True) -> None:
+def save_data(file_data, file_path, poses, dict=True) -> None:
+    
     if dict:
-        file_data = convert_to_dict(file_data)
+        file_data = convert_to_dict(file_data, poses)
         
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
@@ -499,5 +501,5 @@ def pt3d_to_y2d(x, y, z, K, D, R, t):
 if __name__ == "__main__":
     skelly = load_skeleton("C://Users//user-pc//Documents//Scripts//FYP//skeletons//cheetah_serious.pickle")
     print(skelly)
-    model1 = build_model(skelly, "C://Users//user-pc//Documents//Scripts//FYP//data")
-    solve_optimisation(model1, "C://Users//user-pc//anaconda3//pkgs//ipopt-3.11.1-2//Library//bin//ipopt.exe", "C://Users//user-pc//Documents//Scripts//FYP//data")
+    model1, pose3d = build_model(skelly, "C://Users//user-pc//Documents//Scripts//FYP//data")
+    solve_optimisation(model1, exe_path="C://Users//user-pc//anaconda3//pkgs//ipopt-3.11.1-2//Library//bin//ipopt.exe", project_dir="C://Users//user-pc//Documents//Scripts//FYP//data", poses=pose3d)

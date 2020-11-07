@@ -3,6 +3,8 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import filedialog, ttk
 import os
+import time
+from pyomo.core.expr import current
 from calib import calib, app, extract, utils, plotting
 import get_points as pt
 import matplotlib
@@ -11,6 +13,9 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import Axes3D
 import pickle
+import analyse as an
+import build as bd
+from matplotlib.animation import FuncAnimation, PillowWriter, Animation
 
 class Application(tk.Tk):
 
@@ -60,7 +65,7 @@ class Application(tk.Tk):
 
         self.show_frame("StartPage")
 
-    # Binding events to change label appearances on enter, exit, and click
+    # --- Binding events ---
     def home(self, event):
         self.show_frame("StartPage")
 
@@ -330,11 +335,128 @@ class PageTwo(tk.Frame):
         tk.Frame.__init__(self, parent, height=720, width=1130, background="#ffffff")
         self.controller = controller
         self.pack_propagate(False)
+        self.current_frame = 0
+
+        f = Figure(figsize=(4,4), dpi=100)
+        a = f.add_subplot(111, projection="3d")
+        a.view_init(elev=20., azim=60)
+
+        def rotate_right() -> None:
+            """
+            Rotates the axes right
+            """
+            azimuth = a.azim
+            a.view_init(elev=20., azim=azimuth+10)
+            update_canvas()
+        
+        def rotate_left() -> None:
+            """
+            Rotates the axes left
+            """
+            azimuth = a.azim
+            a.view_init(elev=20., azim=azimuth-10)
+            update_canvas()
+
+        def update_canvas() -> None:
+            """
+            Replots canvas on the GUI with updated points
+            """
+            a.set_xlim3d(3, 7)
+            a.set_ylim3d(6, 10)
+            a.set_zlim3d(0,4)
+            canvas = FigureCanvasTkAgg(f, self)
+            canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+            canvas._tkcanvas.place(relx=0.5, rely=0.45, anchor="center")
+
+        def init():
+            a.set_xlim3d(-1, 8)
+            a.set_ylim3d(6, 10)
+            a.set_zlim3d(0,1)
+            a.view_init(elev=20., azim=30)
+        
+        def update(i):
+            plot_results(i)
+
+        def plot_results(frame=0) -> None:
+            """
+            Plots results for the given skeleton (frame 0)
+            """
+            pose_dict = {}
+            currdir = os.getcwd()
+            skel_name = (field_name1.get())
+            skelly_dir = os.path.join(currdir, "skeletons", (skel_name + ".pickle"))
+            results_dir = os.path.join(currdir, "data", "results", (skel_name + ".pickle"))
+
+            skel_dict = bd.load_skeleton(skelly_dir)
+            results = an.load_pickle(results_dir)
+            links = skel_dict["links"]
+            markers = skel_dict["markers"]
+
+            for i in range(len(markers)):
+                pose_dict[markers[i]] = [results["positions"][frame][i][0], results["positions"][frame][i][1], results["positions"][frame][i][2]]
+                a.scatter(results["positions"][frame][i][0], results["positions"][frame][i][1], results["positions"][frame][i][2])
+            
+            for link in links:
+                if len(link)>1:
+                    a.plot3D([pose_dict[link[0]][0], pose_dict[link[1]][0]],
+                     [pose_dict[link[0]][1], pose_dict[link[1]][1]],
+                    [pose_dict[link[0]][2], pose_dict[link[1]][2]])
+
+            update_canvas()
+        
+        def next_frame() -> None:
+            """
+            Plots the next frame of the results
+            """
+            self.current_frame+=1
+            a.clear()
+            plot_results(self.current_frame)
+
+        def prev_frame() -> None:
+            """
+            Plots the previous frame of the results
+            """
+            self.current_frame-=1
+            a.clear()
+            plot_results(self.current_frame)
+        
+        def play_animation() -> None:
+            """
+            Creates an animation or "slide show" of plotted results in the GUI
+            """
+            ani = FuncAnimation(f, update, 19, 
+                               interval=40, blit=True)
+            writer = PillowWriter(fps=25)  
+            ani.save("test.gif", writer=writer)
+
+        # --- Define and place GUI components ---
+
+        update_canvas()
+
+        label_name = tk.Label(self, text="Enter skeleton name: ", font=controller.normal_font, background="#ffffff")
+        label_name.place(relx=0.4, rely=0.15, anchor = "center")
+
+        field_name1 = tk.Entry(self)
+        field_name1.place(relx=0.6, rely=0.15, anchor="center")
+
+        button_next = tk.Button(self, text="Next", command=next_frame)
+        button_next.place(relx=0.8, rely=0.3, anchor="center")
+        button_prev = tk.Button(self, text="Prev", command=prev_frame)
+        button_prev.place(relx=0.8, rely=0.4, anchor="center")
+
+        button_right = tk.Button(self, text="-->", command=rotate_right)
+        button_right.place(relx=0.3, rely=0.3, anchor="center")
+        button_left = tk.Button(self, text="<--", command=rotate_left)
+        button_left.place(relx=0.3, rely=0.4, anchor="center")
+
+        button_anim = tk.Button(self, text="Animation", command=play_animation)
+        button_anim.place(relx=0.5, rely=0.8, anchor="center")
+    
         label = tk.Label(self, text="Analyse", font=controller.title_font, background="#ffffff")
         label.place(relx=0, rely=0)
-        button = tk.Button(self, text="Go to the start page",
-                           command=lambda: controller.show_frame("StartPage"))
-        button.pack()
+        button_plot = tk.Button(self, text="Plot",
+                           command=plot_results)
+        button_plot.pack()
 
 if __name__ == "__main__":
     app = Application()

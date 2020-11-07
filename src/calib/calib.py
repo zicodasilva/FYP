@@ -395,6 +395,10 @@ def get_pairwise_3d_points_from_df(points_2d_df, k_arr, d_arr, r_arr, t_arr, tri
     n_cameras = len(k_arr)
     camera_pairs = list([(i, i+1) for i in range(n_cameras-1)])
     df_pairs = pd.DataFrame(columns=['x','y','z'])
+    if "lab" in str(points_2d_df['frame'][0]):
+        points_2d_df['frame'] = points_2d_df['frame'].str.replace(r".*img", '')
+        points_2d_df['frame'] = points_2d_df['frame'].str.replace(".png", '')
+    #print(points_2d_df)
     #get pairwise estimates
     for (cam_a, cam_b) in camera_pairs:
         d0 = points_2d_df[points_2d_df['camera']==cam_a]
@@ -414,6 +418,7 @@ def get_pairwise_3d_points_from_df(points_2d_df, k_arr, d_arr, r_arr, t_arr, tri
         else:
             print(f"No pairwise points between camera {cam_a} and {cam_b}")
 
+    #print(df_pairs)
     points_3d_df = df_pairs[['frame', 'marker', 'x','y','z']].groupby(['frame','marker']).mean().reset_index()
     return points_3d_df
 
