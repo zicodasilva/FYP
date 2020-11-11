@@ -1,6 +1,6 @@
 from typing import Dict
 import pickle
-from pyomo.core.base.constraint import ConstraintList
+from pyomo.core.base.constraint import Constraint, ConstraintList
 import sympy as sp
 import numpy as np
 import os
@@ -31,6 +31,9 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
     links = skel_dict["links"]
     positions = skel_dict["positions"]
     dofs = skel_dict["dofs"]
+    dofs["r_hip"] = [1,1,1]
+    dofs["l_hip"] = [1,1,1]
+    dofs["tail_base"] = [1,1,1]
     markers = skel_dict["markers"]
     rot_dict = {}
     pose_dict = {}
@@ -115,7 +118,7 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
     
     h = 1/120 #timestep
     start_frame = 80 # 50
-    N = 100
+    N = 110
     P = 3 + len(phi)+len(theta)+len(psi)
     L = len(pos_funcs)
     C = len(K_arr)
@@ -186,10 +189,11 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
     x_est = frame_est*x_slope + x_intercept
     y_est = frame_est*y_slope + y_intercept
     z_est = frame_est*z_slope + z_intercept
+    print(x_est.shape)
     psi_est = np.arctan2(y_slope, x_slope)
     
     print("Started Optimisation")
-    m = ConcreteModel(name = "Cheetah from measurements")
+    m = ConcreteModel(name = "Skeleton")
 
     # ===== SETS =====
     m.N = RangeSet(N) #number of timesteps in trajectory
@@ -220,6 +224,64 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
         return get_meas_from_df(n+start_frame, c, l, d2)
     m.meas = Param(m.N, m.C, m.L, m.D2, initialize=init_measurements_df)
 
+    resultsfilename='C://Users//user-pc//Desktop//pwpoints.pickle'
+    with open(resultsfilename, 'rb') as f:
+            data=pickle.load(f)
+    
+    index_dict = {"nose":23, "neck_base":24, "spine":6, "tail_base":22, "tail1":11,
+     "tail2":12, "l_shoulder":13,"l_front_knee":14,"l_front_ankle":15,"r_shoulder":2,
+      "r_front_knee":3, "r_front_ankle":4,"l_hip":17,"l_back_knee":18, "l_back_ankle":19,
+       "r_hip":7,"r_back_knee":8,"r_back_ankle":9}
+
+    pair_dict = {"nose":[0,1,24], "neck_base":[6,13,2], "spine":[24,22], "tail_base":[6,7,17], "tail1":[22,12],
+     "tail2":[11,22], "l_shoulder":[24,14],"l_front_knee":[13,15],"l_front_ankle":[14,16],"r_shoulder":[24,3],
+      "r_front_knee":[2,4], "r_front_ankle":[3,5],"l_hip":[18,22],"l_back_knee":[17,19], "l_back_ankle":[18,20],
+       "r_hip":[8,22],"r_back_knee":[7,9],"r_back_ankle":[8,10]}
+    
+    
+    def init_pw_measurements(m, n, c, l, d2):
+        val=0
+        if n-1 >= 20 and n-1 < 30:
+            fn = 10*(c-1)+(n-20)-1
+            x=data[fn]['pose'][0::3]
+            y=data[fn]['pose'][1::3]
+            xpw=data[fn]['pws'][:,:,:,0]
+            ypw=data[fn]['pws'][:,:,:,1]
+            marker = markers[l-1]
+            base = pair_dict[marker][1]
+            if d2==1:
+                val=x[base]+xpw[0,base,index_dict[marker]]
+            elif d2==2:
+                val=y[base]+ypw[0,base,index_dict[marker]]
+                #sum/=len(pair_dict[marker])
+            return val
+        else:
+            return get_meas_from_df(n+start_frame, c, l, d2)
+            
+    m.pw_meas = Param(m.N, m.C, m.L, m.D2, initialize=init_pw_measurements, within=Any)
+    """
+    def init_pw_measurements2(m, n, c, l, d2):
+        val=0
+        if n-1 >= 20 and n-1 < 30:
+            fn = 10*(c-1)+(n-20)-1
+            x=data[fn]['pose'][0::3]
+            y=data[fn]['pose'][1::3]
+            xpw=data[fn]['pws'][:,:,:,0]
+            ypw=data[fn]['pws'][:,:,:,1]
+            marker = markers[l-1]
+            if "ankle" in marker:
+                base = pair_dict[marker][1]
+                if d2==1:
+                    val=x[base]+xpw[0,base,index_dict[marker]]
+                elif d2==2:
+                    val=y[base]+ypw[0,base,index_dict[marker]]
+                #sum/=len(pair_dict[marker])
+                return val
+        else:
+            return(0.0)
+            
+    m.pw_meas2 = Param(m.N, m.C, m.L, m.D2, initialize=init_pw_measurements2, within=Any)
+    """
     # ===== VARIABLES =====
     m.x = Var(m.N, m.P) #position
     m.dx = Var(m.N, m.P) #velocity
@@ -231,7 +293,7 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
 
     # ===== VARIABLES INITIALIZATION =====
     init_x = np.zeros((N-start_frame, P))
-    init_x[:,0] = x_est[start_frame: start_frame+N]#x
+    init_x[:,0] = x_est[start_frame: start_frame+N] #x
     init_x[:,1] = y_est[start_frame: start_frame+N] #y
     init_x[:,2] = z_est[start_frame: start_frame+N] #z
     #init_x[:,(3+len(pos_funcs)*2)] = psi_est #yaw - psi
@@ -261,7 +323,6 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
         var_list = [m.x[n,p] for p in range(1, P+1)]
         [pos] = pos_funcs[l-1](*var_list)
         return pos[d3-1] == m.poses[n,l,d3]
-
     
     m.pose_constraint = Constraint(m.N, m.L, m.D3, rule=pose_constraint)
 
@@ -285,7 +346,7 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
     m.angs = ConstraintList()
     for n in range(1,N):
         for i in range(3, 3*len(positions)):
-            m.angs.add(expr=(abs(m.x[n,i]) <= np.pi))
+            m.angs.add(expr=(abs(m.x[n,i]) <= np.pi/2))
 
     # MODEL
     def constant_acc(m, n, p):
@@ -302,7 +363,27 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
         x, y, z = m.poses[n,l,1], m.poses[n,l,2], m.poses[n,l,3]
         return proj_funcs[d2-1](x, y, z, K, D, R, t) - m.meas[n, c, l, d2] - m.slack_meas[n, c, l, d2] ==0
     m.measurement = Constraint(m.N, m.C, m.L, m.D2, rule = measurement_constraints)
-
+    
+    def pw_measurement_constraints(m, n, c, l, d2):
+        #project
+        if n-1 >= 20 and n-1 < 30:
+            K, D, R, t = K_arr[c-1], D_arr[c-1], R_arr[c-1], t_arr[c-1]
+            x, y, z = m.poses[n,l,1], m.poses[n,l,2], m.poses[n,l,3]
+            return proj_funcs[d2-1](x, y, z, K, D, R, t) - m.pw_meas[n, c, l, d2] - m.slack_meas[n, c, l, d2] ==0.0
+        else:
+            return(Constraint.Skip)
+    m.pw_measurement = Constraint(m.N, m.C, m.L, m.D2, rule = pw_measurement_constraints)
+    """
+    def pw_measurement_constraints2(m, n, c, l, d2):
+        #project
+        if n-1 >= 20 and n-1 < 30 and "ankle" in markers[l-1]:
+            K, D, R, t = K_arr[c-1], D_arr[c-1], R_arr[c-1], t_arr[c-1]
+            x, y, z = m.poses[n,l,1], m.poses[n,l,2], m.poses[n,l,3]
+            return proj_funcs[d2-1](x, y, z, K, D, R, t) - m.pw_meas2[n, c, l, d2] - m.slack_meas[n, c, l, d2] ==0.0
+        else:
+            return(Constraint.Skip)
+    m.pw_measurement2 = Constraint(m.N, m.C, m.L, m.D2, rule = pw_measurement_constraints2)
+    """
     def obj(m):
         slack_model_err = 0.0
         slack_meas_err = 0.0
@@ -314,7 +395,10 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
             for l in range(1, L+1):
                 for c in range (1, C+1):
                     for d2 in range(1, D2+1):
-                        slack_meas_err += redescending_loss(m.meas_err_weight[n, c, l] * m.slack_meas[n, c, l, d2], 3, 10, 20)
+                        if n-1 >= 20 and n-1 < 30:
+                            slack_meas_err += redescending_loss(1/30 * m.slack_meas[n, c, l, d2], 3, 5, 15)
+                        else:
+                            slack_meas_err += redescending_loss(m.meas_err_weight[n, c, l] * m.slack_meas[n, c, l, d2], 3, 10, 20)
         return slack_meas_err + slack_model_err
 
     m.obj = Objective(rule = obj)
