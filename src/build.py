@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Tuple
 import pickle
 from pyomo.core.base.constraint import Constraint, ConstraintList
 import sympy as sp
@@ -12,10 +12,12 @@ from pyomo.environ import *
 from pyomo.opt import SolverFactory
 from pyomo.opt import SolverStatus, TerminationCondition
 from pyomo.core.base.PyomoModel import ConcreteModel
+# Bring your packages onto the path
+import sys
+sys.path.append(os.path.abspath(os.path.join("..", "..")))
+from AcinoSet.src.lib import utils as utility, misc, vid
 
-# pose_to_3d = []
-
-def generate_plotting_data(project_dir: str, m: ConcreteModel, poses) -> None:
+def generate_plotting_data(results_dir: str, scene_file: str, m: ConcreteModel, poses: Dict) -> None:
     # GET ALL THE PLOTTING DATA AND SAVE
     x_opt = []
     for n in m.N:
@@ -29,10 +31,9 @@ def generate_plotting_data(project_dir: str, m: ConcreteModel, poses) -> None:
         scatter_frames.append(skeleton)
         lines_frames.append(skeleton[[0,1,0,2,1,2,1,3,0,3,2,3,3,4,4,5,5,6,6,7,3,8,4,8,8,9,9,10,3,11,4,11,11,12,12,13,4,14,5,14,14,15,15,16,4,17,5,17,17,18,18,19], :])
 
-    scene_path = os.path.join(project_dir, "scene_sba.json")
-    K_arr, D_arr, R_arr, t_arr, _ = utils.load_scene(scene_path)
+    K_arr, D_arr, R_arr, t_arr, _ = utils.load_scene(scene_file)
     D_arr = D_arr.reshape((-1,4))
-    np.save(os.path.join(project_dir, "results", 'plot_data.npy'), [scatter_frames,lines_frames,K_arr,D_arr,R_arr,t_arr])
+    np.save(os.path.join(results_dir, 'plot_data.npy'), [scatter_frames,lines_frames,K_arr,D_arr,R_arr,t_arr])
     print(f"saved plot_data.npy\n")
 
 def load_data(file) -> Dict:
@@ -44,7 +45,9 @@ def load_data(file) -> Dict:
 
     return data
 
-def build_model(project_dir) -> ConcreteModel:
+def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
+    #SYMBOLIC ROTATION MATRIX FUNCTIONS
+
     L = 14  #number of joints in the cheetah model
 
     # defines arrays ofa angles, velocities and accelerations
@@ -132,7 +135,6 @@ def build_model(project_dir) -> ConcreteModel:
     p_r_back_knee   = p_r_hip        + R12_I @ sp.Matrix([0, 0, -0.32])
     p_r_back_ankle  = p_r_back_knee  + R13_I @ sp.Matrix([0, 0, -0.25])
 
-    # ========= LAMBDIFY SYMBOLIC FUNCTIONS ========
     positions = sp.Matrix([
         p_l_eye.T, p_r_eye.T, p_nose.T,
         p_neck_base.T, p_spine.T,
@@ -143,6 +145,7 @@ def build_model(project_dir) -> ConcreteModel:
         p_r_hip.T, p_r_back_knee.T, p_r_back_ankle.T
     ])
 
+    # ========= LAMBDIFY SYMBOLIC FUNCTIONS ========
     func_map = {"sin":sin, "cos":cos, "ImmutableDenseMatrix":np.array}
     sym_list = [x, y, z, *phi, *theta, *psi]
     pose_to_3d = sp.lambdify(sym_list, positions, modules=[func_map])
@@ -156,6 +159,7 @@ def build_model(project_dir) -> ConcreteModel:
     K_arr, D_arr, R_arr, t_arr, _ = utils.load_scene(scene_path)
     D_arr = D_arr.reshape((-1,4))
 
+    # markers = misc.get_markers()
     markers = dict(enumerate([
     "l_eye", "r_eye", "nose",
     "neck_base", "spine",
@@ -164,9 +168,8 @@ def build_model(project_dir) -> ConcreteModel:
     "r_shoulder", "r_front_knee", "r_front_ankle",
     "l_hip", "l_back_knee", "l_back_ankle",
     "r_hip", "r_back_knee", "r_back_ankle"
-]))
-
-    print(f"\n\n\nLoading data")
+    ]))
+    print("Loading data")
 
     df_paths = sorted(glob.glob(os.path.join(project_dir, '*.h5')))
     points_2d_df = utils.create_dlc_points_2d_file(df_paths)
@@ -190,7 +193,7 @@ def build_model(project_dir) -> ConcreteModel:
 
     h = 1/120 #timestep
     end_frame = 180
-    start_frame = 50
+    start_frame = 40
     N = end_frame-start_frame # N > start_frame !!
     P = 3 + len(phi)+len(theta)+len(psi)
     L = len(pos_funcs)
@@ -250,7 +253,7 @@ def build_model(project_dir) -> ConcreteModel:
     ])**2
 
     triangulate_func = calib.triangulate_points_fisheye
-    points_2d_filtered_df = points_2d_df[points_2d_df['likelihood']>0.5]
+    points_2d_filtered_df = points_2d_df[points_2d_df['likelihood']>dlc_thresh]
     points_3d_df = calib.get_pairwise_3d_points_from_df(points_2d_filtered_df, K_arr, D_arr, R_arr, t_arr, triangulate_func)
 
     # estimate initial points
@@ -278,17 +281,17 @@ def build_model(project_dir) -> ConcreteModel:
 
     def init_meas_weights(model, n, c, l):
         likelihood = get_likelihood_from_df(n+start_frame, c, l)
-        if likelihood > 0.5:
+        if likelihood > dlc_thresh:
             return 1/R
         else:
             return 0
     m.meas_err_weight = Param(m.N, m.C, m.L, initialize=init_meas_weights, mutable=True)  # IndexError: index 0 is out of bounds for axis 0 with size 0
 
     def init_model_weights(m, p):
-        #if Q[p-1] != 0.0:
-            #return 1/Q[p-1]
-        #else:
-        return 0.01
+        if Q[p-1] != 0.0:
+            return 1/Q[p-1]
+        else:
+            return 0
     m.model_err_weight = Param(m.P, initialize=init_model_weights)
 
     m.h = h
@@ -369,7 +372,6 @@ def build_model(project_dir) -> ConcreteModel:
     init_x[:,0] = x_est[start_frame: start_frame+N] #x
     init_x[:,1] = y_est[start_frame: start_frame+N] #y
     init_x[:,2] = z_est[start_frame: start_frame+N] #z
-    #init_x[:,(3+len(pos_funcs)*2)] = psi_est #yaw - psi
     init_x[:,31] = psi_est #yaw - psi
     init_dx = np.zeros((N, P))
     init_ddx = np.zeros((N, P))
@@ -489,12 +491,12 @@ def build_model(project_dir) -> ConcreteModel:
         return abs(m.x[n,21]) <= np.pi/6
     m.back_torso_theta_3 = Constraint(m.N, rule=back_torso_theta_3)
     # --- Back torso phi constraint - uncomment if needed! ---
-    #def back_torso_phi_3(m,n):
-        #return abs(m.x[n,7]) <= np.pi/6
-    #m.back_torso_phi_3 = Constraint(m.N, rule=back_torso_phi_3)
+    def back_torso_phi_3(m,n):
+        return abs(m.x[n,7]) <= np.pi/6
+    m.back_torso_phi_3 = Constraint(m.N, rule=back_torso_phi_3)
     def back_torso_psi_3(m,n):
         return abs(m.x[n,35]) <= np.pi/6
-    #m.back_torso_psi_3 = Constraint(m.N, rule=back_torso_psi_3)
+    m.back_torso_psi_3 = Constraint(m.N, rule=back_torso_psi_3)
 
     #Tail base
     def tail_base_theta_4(m,n):
@@ -557,14 +559,14 @@ def build_model(project_dir) -> ConcreteModel:
             for l in m.L:
                 for c in m.C:
                     for d2 in m.D2:
-                        slack_meas_err += redescending_loss(m.meas_err_weight[n, c, l] * m.slack_meas[n, c, l, d2], 3, 7, 20)
+                        slack_meas_err += misc.redescending_loss(m.meas_err_weight[n, c, l] * m.slack_meas[n, c, l, d2], 3, 10, 20)
         return slack_meas_err + slack_model_err
 
     m.obj = Objective(rule = obj)
 
     return m, pose_to_3d
 
-def solve_optimisation(model, exe_path, project_dir, poses) -> None:
+def solve_optimisation(model, exe_path = None) -> None:
     """
     Solves a given trajectory optimisation problem given a model and solver
     """
@@ -586,15 +588,11 @@ def solve_optimisation(model, exe_path, project_dir, poses) -> None:
     LOG_DIR = '/Users/zico/msc/dev/FYP/logs'
 
     # --- This step may take a while! ---
-    results = opt.solve(
+    opt.solve(
         model, tee=True,
         keepfiles=True,
         logfile=os.path.join(LOG_DIR, "solver.log")
     )
-
-    result_dir = os.path.join(project_dir, "results")
-    save_data(model, file_path=os.path.join(result_dir, 'traj_results.pickle'), poses=poses)
-    generate_plotting_data(project_dir, model, poses)
 
 #def save_data(file_data, filepath, dict=False):
     #if dict:
@@ -602,6 +600,18 @@ def solve_optimisation(model, exe_path, project_dir, poses) -> None:
 
     #with open(filepath, 'wb') as f:
         #pickle.dump(file_data, f)
+
+def save_results(model, poses, project_dir: str, dlc_thresh=0.5) -> None:
+    result_dir = os.path.join(project_dir, "results")
+    scene_path = os.path.join(project_dir, "scene_sba.json")
+    save_data(model, file_path=os.path.join(result_dir, 'traj_results.pickle'), poses=poses)
+    generate_plotting_data(result_dir, scene_path, model, poses)
+    x, dx, ddx =  [], [], []
+    for n in model.N:
+        x.append([value(model.x[n, p]) for p in model.P])
+        dx.append([value(model.dx[n, p]) for p in model.P])
+        ddx.append([value(model.ddx[n, p]) for p in model.P])
+    # save_fte(dict(x=x, dx=dx, ddx=ddx), result_dir, scene_path, 50, dlc_thresh)
 
 def convert_to_dict(m, poses) -> Dict:
     x_optimised = []
@@ -639,81 +649,6 @@ def save_data(file_data, file_path, poses, dict=True) -> None:
 
     print(f'save {file_path}')
 
-# --- OUTLIER REJECTING COST FUNCTION (REDESCENDING LOSS) ---
-
-def func_step(start, x):
-        return 1/(1+np.e**(-1*(x - start)))
-
-def func_piece(start, end, x):
-        return func_step(start, x) - func_step(end, x)
-
-def redescending_loss(err, a, b, c):
-    e = abs(err)
-    cost = 0.0
-    cost += (1 - func_step(a, e))/2*e**2
-    cost += func_piece(a, b, e)*(a*e - (a**2)/2)
-    cost += func_piece(b, c, e)*(a*b - (a**2)/2 + (a*(c-b)/2)*(1-((c-e)/(c-b))**2))
-    cost += func_step(c, e)*(a*b - (a**2)/2 + (a*(c-b)/2))
-    return cost
-
-# --- Rotation matrices for x, y, and z axes ---
-
-def rot_x(x):
-    c = sp.cos(x)
-    s = sp.sin(x)
-    return sp.Matrix([
-        [1, 0, 0],
-        [0, c, s],
-        [0, -s, c]
-    ])
-
-def rot_y(y):
-    c = sp.cos(y)
-    s = sp.sin(y)
-    return sp.Matrix([
-        [c, 0, -s],
-        [0, 1, 0],
-        [s, 0, c]
-    ])
-
-def rot_z(z):
-    c = sp.cos(z)
-    s = sp.sin(z)
-    return sp.Matrix([
-        [c, s, 0],
-        [-s, c, 0],
-        [0, 0, 1]
-    ])
-
-# --- Numpy equivalent rotation matrices ---
-
-def np_rot_x(x):
-    c = np.cos(x)
-    s = np.sin(x)
-    return np.array([
-        [1, 0, 0],
-        [0, c, s],
-        [0, -s, c]
-    ])
-
-def np_rot_y(y):
-    c = np.cos(y)
-    s = np.sin(y)
-    return np.array([
-        [c, 0, -s],
-        [0, 1, 0],
-        [s, 0, c]
-    ])
-
-def np_rot_z(z):
-    c = np.cos(z)
-    s = np.sin(z)
-    return np.array([
-        [c, s, 0],
-        [-s, c, 0],
-        [0, 0, 1]
-    ])
-
 # --- Reprojection functions ---
 
 def pt3d_to_2d(x, y, z, K, D, R, t):
@@ -742,7 +677,70 @@ def pt3d_to_y2d(x, y, z, K, D, R, t):
     v = pt3d_to_2d(x, y, z, K, D, R, t)[1]
     return v
 
+def rot_x(x):
+    c = sp.cos(x)
+    s = sp.sin(x)
+    return sp.Matrix([
+        [1, 0, 0],
+        [0, c, s],
+        [0, -s, c]
+    ])
+
+def rot_y(y):
+    c = sp.cos(y)
+    s = sp.sin(y)
+    return sp.Matrix([
+        [c, 0, -s],
+        [0, 1, 0],
+        [s, 0, c]
+    ])
+
+def rot_z(z):
+    c = sp.cos(z)
+    s = sp.sin(z)
+    return sp.Matrix([
+        [c, s, 0],
+        [-s, c, 0],
+        [0, 0, 1]
+    ])
+
+
+def save_fte(states, out_dir, scene_fpath, start_frame, dlc_thresh, save_videos=True):
+    positions = [misc.get_3d_marker_coords(state) for state in states['x']]
+    out_fpath = os.path.join(out_dir, f"fte.pickle")
+    utility.save_optimised_cheetah(positions, out_fpath, extra_data=dict(**states, start_frame=start_frame))
+    utility.save_3d_cheetah_as_2d(positions, out_dir, scene_fpath, misc.get_markers(), calib.project_points_fisheye, start_frame)
+
+    if save_videos:
+        video_fpaths = glob.glob(os.path.join(os.path.dirname(out_dir), 'cam[1-9].mp4')) # original vids should be in the parent dir
+        create_labeled_videos(video_fpaths, out_dir=out_dir, draw_skeleton=True, pcutoff=dlc_thresh)
+
+def create_labeled_videos(video_fpaths, videotype="mp4", codec="mp4v", outputframerate=None, out_dir=None, draw_skeleton=False, pcutoff=0.5, dotsize=6, colormap='jet', skeleton_color='white'):
+    from functools import partial
+    from multiprocessing import Pool
+
+    print('Saving labeled videos...')
+
+    bodyparts = misc.get_markers()
+    bodyparts2connect = misc.get_skeleton() if draw_skeleton else None
+
+    if not video_fpaths:
+        print("No videos were found. Please check your paths\n")
+        return
+
+    if out_dir is None:
+        out_dir = os.path.relpath(os.path.dirname(video_fpaths[0]), os.getcwd())
+
+    func = partial(vid.proc_video, out_dir, bodyparts, codec, bodyparts2connect, outputframerate, draw_skeleton, pcutoff, dotsize, colormap, skeleton_color)
+
+    with Pool(min(os.cpu_count(), len(video_fpaths))) as pool:
+        pool.map(func,video_fpaths)
+
+    print('Done!\n')
+
 if __name__ == "__main__":
     project_dir = "/Users/zico/msc/dev/FYP/data/09_03_2019/lily/run"
+    print("Start building model...")
     model, pose3d = build_model(project_dir)
-    solve_optimisation(model, exe_path=None, project_dir=project_dir, poses=pose3d)
+    solve_optimisation(model)
+    save_results(model, pose3d, project_dir)
