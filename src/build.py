@@ -13,88 +13,158 @@ from pyomo.opt import SolverFactory
 from pyomo.opt import SolverStatus, TerminationCondition
 from pyomo.core.base.PyomoModel import ConcreteModel
 
-pose_to_3d = []
+# pose_to_3d = []
 
-def load_skeleton(skel_file) -> Dict:
+def generate_plotting_data(project_dir: str, m: ConcreteModel, poses) -> None:
+    # GET ALL THE PLOTTING DATA AND SAVE
+    x_opt = []
+    for n in m.N:
+        x_opt.append([value(m.x[n, p]) for p in m.P])
+    x_opt = np.array(x_opt)
+
+    scatter_frames = []
+    lines_frames = []
+    for idx, states in enumerate(x_opt):
+        skeleton = poses(*states)
+        scatter_frames.append(skeleton)
+        lines_frames.append(skeleton[[0,1,0,2,1,2,1,3,0,3,2,3,3,4,4,5,5,6,6,7,3,8,4,8,8,9,9,10,3,11,4,11,11,12,12,13,4,14,5,14,14,15,15,16,4,17,5,17,17,18,18,19], :])
+
+    scene_path = os.path.join(project_dir, "scene_sba.json")
+    K_arr, D_arr, R_arr, t_arr, _ = utils.load_scene(scene_path)
+    D_arr = D_arr.reshape((-1,4))
+    np.save(os.path.join(project_dir, "results", 'plot_data.npy'), [scatter_frames,lines_frames,K_arr,D_arr,R_arr,t_arr])
+    print(f"saved plot_data.npy\n")
+
+def load_data(file) -> Dict:
     """
     Loads a skeleton dictionary from a saved skeleton .pickle file
     """
-    with open(skel_file, 'rb') as handle:
-        skel_dict = pickle.load(handle)
+    with open(file, 'rb') as handle:
+        data = pickle.load(handle)
 
-    return skel_dict
+    return data
 
-def build_model(skel_dict, project_dir) -> ConcreteModel:
-    """
-    Builds a pyomo model from a given saved skeleton dictionary
-    """
-    links = skel_dict["links"]
-    positions = skel_dict["positions"]
-    dofs = skel_dict["dofs"]
-    dofs["r_hip"] = [1,1,1]
-    dofs["l_hip"] = [1,1,1]
-    dofs["tail_base"] = [1,1,1]
-    markers = skel_dict["markers"]
-    rot_dict = {}
-    pose_dict = {}
-    L = len(positions)
+def build_model(project_dir) -> ConcreteModel:
+    L = 14  #number of joints in the cheetah model
 
+    # defines arrays ofa angles, velocities and accelerations
     phi     = [sp.symbols(f"\\phi_{{{l}}}")   for l in range(L)]
     theta   = [sp.symbols(f"\\theta_{{{l}}}") for l in range(L)]
     psi     = [sp.symbols(f"\\psi_{{{l}}}")   for l in range(L)]
 
-    i=0
-    for part in dofs:
-        rot_dict[part] = sp.eye(3)
-        if dofs[part][1]:
-            rot_dict[part] = rot_y(theta[i]) @ rot_dict[part]
-        if dofs[part][0]:
-            rot_dict[part] = rot_x(phi[i]) @ rot_dict[part]
-        if dofs[part][2]:
-            rot_dict[part] = rot_z(psi[i]) @ rot_dict[part]
-        
-        rot_dict[part + "_i"] = rot_dict[part].T
-        i+=1
-    
+    #ROTATIONS
+    # head
+    RI_0 = rot_z(psi[0]) @ rot_x(phi[0]) @ rot_y(theta[0])
+    R0_I = RI_0.T
+    # neck
+    RI_1 = rot_z(psi[1]) @ rot_x(phi[1]) @ rot_y(theta[1]) @ RI_0
+    R1_I = RI_1.T
+    # front torso
+    RI_2 = rot_y(theta[2]) @ RI_1
+    R2_I = RI_2.T
+    # back torso
+    RI_3 = rot_z(psi[3])@ rot_x(phi[3]) @ rot_y(theta[3]) @ RI_2
+    R3_I = RI_3.T
+    # tail base
+    RI_4 = rot_z(psi[4]) @ rot_y(theta[4]) @ RI_3
+    R4_I = RI_4.T
+    # tail mid
+    RI_5 = rot_z(psi[5]) @ rot_y(theta[5]) @ RI_4
+    R5_I = RI_5.T
+    #l_shoulder
+    RI_6 = rot_y(theta[6]) @ RI_2
+    R6_I = RI_6.T
+    #l_front_knee
+    RI_7 = rot_y(theta[7]) @ RI_6
+    R7_I = RI_7.T
+    #r_shoulder
+    RI_8 = rot_y(theta[8]) @ RI_2
+    R8_I = RI_8.T
+    #r_front_knee
+    RI_9 = rot_y(theta[9]) @ RI_8
+    R9_I = RI_9.T
+    #l_hip
+    RI_10 = rot_y(theta[10]) @ RI_3
+    R10_I = RI_10.T
+    #l_back_knee
+    RI_11 = rot_y(theta[11]) @ RI_10
+    R11_I = RI_11.T
+    #r_hip
+    RI_12 = rot_y(theta[12]) @ RI_3
+    R12_I = RI_12.T
+    #r_back_knee
+    RI_13 = rot_y(theta[13]) @ RI_12
+    R13_I = RI_13.T
+
+    # defines the position, velocities and accelerations in the inertial frame
     x,   y,   z   = sp.symbols("x y z")
     dx,  dy,  dz  = sp.symbols("\\dot{x} \\dot{y} \\dot{z}")
     ddx, ddy, ddz = sp.symbols("\\ddot{x} \\ddot{y} \\ddot{z}")
 
-    for link in links:
-        if len(link) == 1:
-            pose_dict[link[0]] = sp.Matrix([x, y, z])
-        else:
-            if link[0] not in pose_dict:
-                pose_dict[link[0]] = sp.Matrix([x, y, z])
 
-            translation_vec = sp.Matrix([positions[link[1]][0] - positions[link[0]][0],
-                 positions[link[1]][1] - positions[link[0]][1],
-                 positions[link[1]][2] - positions[link[0]][2]])
-            rot_dict[link[1]] = rot_dict[link[1]] @ rot_dict[link[0]]
-            rot_dict[link[1]+"_i"] = rot_dict[link[1]+"_i"].T
-            pose_dict[link[1]] = pose_dict[link[0]] + rot_dict[link[0] + "_i"] @ translation_vec
-    
-    t_poses = []
-    for pose in pose_dict:
-        t_poses.append(pose_dict[pose].T)
-    
-    t_poses_mat = sp.Matrix(t_poses)
+    # SYMBOLIC CHEETAH POSE POSITIONS
+    p_head          = sp.Matrix([x, y, z])
 
-    func_map = {"sin":sin, "cos":cos, "ImmutableDenseMatrix":np.array} 
+    p_l_eye         = p_head         + R0_I  @ sp.Matrix([0, 0.03, 0])
+    p_r_eye         = p_head         + R0_I  @ sp.Matrix([0, -0.03, 0])
+    p_nose          = p_head         + R0_I  @ sp.Matrix([0.055, 0, -0.055])
+
+    p_neck_base     = p_head         + R1_I  @ sp.Matrix([-0.28, 0, 0])
+    p_spine         = p_neck_base    + R2_I  @ sp.Matrix([-0.37, 0, 0])
+
+    p_tail_base     = p_spine        + R3_I  @ sp.Matrix([-0.37, 0, 0])
+    p_tail_mid      = p_tail_base    + R4_I  @ sp.Matrix([-0.28, 0, 0])
+    p_tail_tip      = p_tail_mid     + R5_I  @ sp.Matrix([-0.36, 0, 0])
+
+    p_l_shoulder    = p_neck_base    + R2_I  @ sp.Matrix([-0.04, 0.08, -0.10])
+    p_l_front_knee  = p_l_shoulder   + R6_I  @ sp.Matrix([0, 0, -0.24])
+    p_l_front_ankle = p_l_front_knee + R7_I  @ sp.Matrix([0, 0, -0.28])
+
+    p_r_shoulder    = p_neck_base    + R2_I  @ sp.Matrix([-0.04, -0.08, -0.10])
+    p_r_front_knee  = p_r_shoulder   + R8_I  @ sp.Matrix([0, 0, -0.24])
+    p_r_front_ankle = p_r_front_knee + R9_I  @ sp.Matrix([0, 0, -0.28])
+
+    p_l_hip         = p_tail_base    + R3_I  @ sp.Matrix([0.12, 0.08, -0.06])
+    p_l_back_knee   = p_l_hip        + R10_I @ sp.Matrix([0, 0, -0.32])
+    p_l_back_ankle  = p_l_back_knee  + R11_I @ sp.Matrix([0, 0, -0.25])
+
+    p_r_hip         = p_tail_base    + R3_I  @ sp.Matrix([0.12, -0.08, -0.06])
+    p_r_back_knee   = p_r_hip        + R12_I @ sp.Matrix([0, 0, -0.32])
+    p_r_back_ankle  = p_r_back_knee  + R13_I @ sp.Matrix([0, 0, -0.25])
+
+    # ========= LAMBDIFY SYMBOLIC FUNCTIONS ========
+    positions = sp.Matrix([
+        p_l_eye.T, p_r_eye.T, p_nose.T,
+        p_neck_base.T, p_spine.T,
+        p_tail_base.T, p_tail_mid.T, p_tail_tip.T,
+        p_l_shoulder.T, p_l_front_knee.T, p_l_front_ankle.T,
+        p_r_shoulder.T, p_r_front_knee.T, p_r_front_ankle.T,
+        p_l_hip.T, p_l_back_knee.T, p_l_back_ankle.T,
+        p_r_hip.T, p_r_back_knee.T, p_r_back_ankle.T
+    ])
+
+    func_map = {"sin":sin, "cos":cos, "ImmutableDenseMatrix":np.array}
     sym_list = [x, y, z, *phi, *theta, *psi]
-    pose_to_3d = sp.lambdify(sym_list, t_poses_mat, modules=[func_map])
+    pose_to_3d = sp.lambdify(sym_list, positions, modules=[func_map])
     pos_funcs = []
-
-    for i in range(t_poses_mat.shape[0]):
-        lamb = sp.lambdify(sym_list, t_poses_mat[i,:], modules=[func_map])
+    for i in range(positions.shape[0]):
+        lamb = sp.lambdify(sym_list, positions[i,:], modules=[func_map])
         pos_funcs.append(lamb)
-    
+
     scene_path = os.path.join(project_dir, "scene_sba.json")
 
     K_arr, D_arr, R_arr, t_arr, _ = utils.load_scene(scene_path)
     D_arr = D_arr.reshape((-1,4))
 
-    markers_dict = dict(enumerate(markers))
+    markers = dict(enumerate([
+    "l_eye", "r_eye", "nose",
+    "neck_base", "spine",
+    "tail_base", "tail1", "tail2",
+    "l_shoulder", "l_front_knee", "l_front_ankle",
+    "r_shoulder", "r_front_knee", "r_front_ankle",
+    "l_hip", "l_back_knee", "l_back_ankle",
+    "r_hip", "r_back_knee", "r_back_ankle"
+]))
 
     print(f"\n\n\nLoading data")
 
@@ -115,10 +185,13 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
         c_mask = points_2d_df["camera"]== c-1
         val = points_2d_df[n_mask & l_mask & c_mask]
         return val["likelihood"].values[0]
-    
+
+    # Parameters
+
     h = 1/120 #timestep
-    start_frame = 80 # 50
-    N = 110
+    end_frame = 180
+    start_frame = 50
+    N = end_frame-start_frame # N > start_frame !!
     P = 3 + len(phi)+len(theta)+len(psi)
     L = len(pos_funcs)
     C = len(K_arr)
@@ -191,7 +264,7 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
     z_est = frame_est*z_slope + z_intercept
     print(x_est.shape)
     psi_est = np.arctan2(y_slope, x_slope)
-    
+
     print("Started Optimisation")
     m = ConcreteModel(name = "Skeleton")
 
@@ -224,11 +297,11 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
         return get_meas_from_df(n+start_frame, c, l, d2)
     m.meas = Param(m.N, m.C, m.L, m.D2, initialize=init_measurements_df)
 
-    resultsfilename='C://Users//user-pc//Desktop//pwpoints.pickle'
-    with open(resultsfilename, 'rb') as f:
-            data=pickle.load(f)
-    
-    index_dict = {"nose":23, "neck_base":24, "spine":6, "tail_base":22, "tail1":11,
+    # resultsfilename='C://Users//user-pc//Desktop//pwpoints.pickle'
+    # with open(resultsfilename, 'rb') as f:
+    #         data=pickle.load(f)
+
+    index_dict = {"nose":23, "r_eye":0, "l_eye":1, "neck_base":24, "spine":6, "tail_base":22, "tail1":11,
      "tail2":12, "l_shoulder":13,"l_front_knee":14,"l_front_ankle":15,"r_shoulder":2,
       "r_front_knee":3, "r_front_ankle":4,"l_hip":17,"l_back_knee":18, "l_back_ankle":19,
        "r_hip":7,"r_back_knee":8,"r_back_ankle":9}
@@ -237,28 +310,28 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
      "tail2":[11,22], "l_shoulder":[24,14],"l_front_knee":[13,15],"l_front_ankle":[14,16],"r_shoulder":[24,3],
       "r_front_knee":[2,4], "r_front_ankle":[3,5],"l_hip":[18,22],"l_back_knee":[17,19], "l_back_ankle":[18,20],
        "r_hip":[8,22],"r_back_knee":[7,9],"r_back_ankle":[8,10]}
-    
-    
-    def init_pw_measurements(m, n, c, l, d2):
-        val=0
-        if n-1 >= 20 and n-1 < 30:
-            fn = 10*(c-1)+(n-20)-1
-            x=data[fn]['pose'][0::3]
-            y=data[fn]['pose'][1::3]
-            xpw=data[fn]['pws'][:,:,:,0]
-            ypw=data[fn]['pws'][:,:,:,1]
-            marker = markers[l-1]
-            base = pair_dict[marker][1]
-            if d2==1:
-                val=x[base]+xpw[0,base,index_dict[marker]]
-            elif d2==2:
-                val=y[base]+ypw[0,base,index_dict[marker]]
-                #sum/=len(pair_dict[marker])
-            return val
-        else:
-            return get_meas_from_df(n+start_frame, c, l, d2)
-            
-    m.pw_meas = Param(m.N, m.C, m.L, m.D2, initialize=init_pw_measurements, within=Any)
+
+
+    # def init_pw_measurements(m, n, c, l, d2):
+    #     val=0
+    #     if n-1 >= 20 and n-1 < 30:
+    #         fn = 10*(c-1)+(n-20)-1
+    #         x=data[fn]['pose'][0::3]
+    #         y=data[fn]['pose'][1::3]
+    #         xpw=data[fn]['pws'][:,:,:,0]
+    #         ypw=data[fn]['pws'][:,:,:,1]
+    #         marker = markers[l-1]
+    #         base = pair_dict[marker][1]
+    #         if d2==1:
+    #             val=x[base]+xpw[0,base,index_dict[marker]]
+    #         elif d2==2:
+    #             val=y[base]+ypw[0,base,index_dict[marker]]
+    #             #sum/=len(pair_dict[marker])
+    #         return val
+    #     else:
+    #         return get_meas_from_df(n+start_frame, c, l, d2)
+
+    # m.pw_meas = Param(m.N, m.C, m.L, m.D2, initialize=init_pw_measurements, within=Any)
     """
     def init_pw_measurements2(m, n, c, l, d2):
         val=0
@@ -279,7 +352,7 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
                 return val
         else:
             return(0.0)
-            
+
     m.pw_meas2 = Param(m.N, m.C, m.L, m.D2, initialize=init_pw_measurements2, within=Any)
     """
     # ===== VARIABLES =====
@@ -297,10 +370,11 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
     init_x[:,1] = y_est[start_frame: start_frame+N] #y
     init_x[:,2] = z_est[start_frame: start_frame+N] #z
     #init_x[:,(3+len(pos_funcs)*2)] = psi_est #yaw - psi
+    init_x[:,31] = psi_est #yaw - psi
     init_dx = np.zeros((N, P))
     init_ddx = np.zeros((N, P))
-    for n in range(1,N+1):
-        for p in range(1,P+1):
+    for n in m.N:
+        for p in m.P:
             if n<len(init_x): #init using known values
                 m.x[n,p].value = init_x[n-1,p-1]
                 m.dx[n,p].value = init_dx[n-1,p-1]
@@ -311,9 +385,9 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
                 m.ddx[n,p].value = init_ddx[-1,p-1]
         #init pose
         var_list = [m.x[n,p].value for p in range(1, P+1)]
-        for l in range(1,L+1):
+        for l in m.L:
             [pos] = pos_funcs[l-1](*var_list)
-            for d3 in range(1,D3+1):
+            for d3 in m.D3:
                 m.poses[n,l,d3].value = pos[d3-1]
 
     # ===== CONSTRAINTS =====
@@ -323,7 +397,7 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
         var_list = [m.x[n,p] for p in range(1, P+1)]
         [pos] = pos_funcs[l-1](*var_list)
         return pos[d3-1] == m.poses[n,l,d3]
-    
+
     m.pose_constraint = Constraint(m.N, m.L, m.D3, rule=pose_constraint)
 
     def backwards_euler_pos(m,n,p): # position
@@ -340,39 +414,39 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
         if n > 1:
             return m.dx[n,p] == m.dx[n-1,p] + m.h*m.ddx[n,p]
         else:
-            return Constraint.Skip 
+            return Constraint.Skip
     m.integrate_v = Constraint(m.N, m.P, rule = backwards_euler_vel)
 
-    m.angs = ConstraintList()
-    for n in range(1,N):
-        for i in range(3, 3*len(positions)):
-            m.angs.add(expr=(abs(m.x[n,i]) <= np.pi/2))
+    # m.angs = ConstraintList()
+    # for n in range(1,N):
+    #     for i in range(3, 3*len(positions)):
+    #         m.angs.add(expr=(abs(m.x[n,i]) <= np.pi/2))
 
     # MODEL
     def constant_acc(m, n, p):
         if n > 1:
             return m.ddx[n,p] == m.ddx[n-1,p] + m.slack_model[n,p]
         else:
-            return Constraint.Skip 
+            return Constraint.Skip
     m.constant_acc = Constraint(m.N, m.P, rule = constant_acc)
 
-    # MEASUREMENT 
+    # MEASUREMENT
     def measurement_constraints(m, n, c, l, d2):
         #project
         K, D, R, t = K_arr[c-1], D_arr[c-1], R_arr[c-1], t_arr[c-1]
         x, y, z = m.poses[n,l,1], m.poses[n,l,2], m.poses[n,l,3]
         return proj_funcs[d2-1](x, y, z, K, D, R, t) - m.meas[n, c, l, d2] - m.slack_meas[n, c, l, d2] ==0
     m.measurement = Constraint(m.N, m.C, m.L, m.D2, rule = measurement_constraints)
-    
-    def pw_measurement_constraints(m, n, c, l, d2):
-        #project
-        if n-1 >= 20 and n-1 < 30:
-            K, D, R, t = K_arr[c-1], D_arr[c-1], R_arr[c-1], t_arr[c-1]
-            x, y, z = m.poses[n,l,1], m.poses[n,l,2], m.poses[n,l,3]
-            return proj_funcs[d2-1](x, y, z, K, D, R, t) - m.pw_meas[n, c, l, d2] - m.slack_meas[n, c, l, d2] ==0.0
-        else:
-            return(Constraint.Skip)
-    m.pw_measurement = Constraint(m.N, m.C, m.L, m.D2, rule = pw_measurement_constraints)
+
+    # def pw_measurement_constraints(m, n, c, l, d2):
+    #     #project
+    #     if n-1 >= 20 and n-1 < 30:
+    #         K, D, R, t = K_arr[c-1], D_arr[c-1], R_arr[c-1], t_arr[c-1]
+    #         x, y, z = m.poses[n,l,1], m.poses[n,l,2], m.poses[n,l,3]
+    #         return proj_funcs[d2-1](x, y, z, K, D, R, t) - m.pw_meas[n, c, l, d2] - m.slack_meas[n, c, l, d2] ==0.0
+    #     else:
+    #         return(Constraint.Skip)
+    # m.pw_measurement = Constraint(m.N, m.C, m.L, m.D2, rule = pw_measurement_constraints)
     """
     def pw_measurement_constraints2(m, n, c, l, d2):
         #project
@@ -384,26 +458,111 @@ def build_model(skel_dict, project_dir) -> ConcreteModel:
             return(Constraint.Skip)
     m.pw_measurement2 = Constraint(m.N, m.C, m.L, m.D2, rule = pw_measurement_constraints2)
     """
+
+    #===== POSE CONSTRAINTS (Note 1 based indexing for pyomo!!!!...@#^!@#&) =====
+    #Head
+    def head_psi_0(m,n):
+        return abs(m.x[n,4]) <= np.pi/6
+    m.head_psi_0 = Constraint(m.N, rule=head_psi_0)
+    def head_theta_0(m,n):
+        return abs(m.x[n,18]) <= np.pi/6
+    m.head_theta_0 = Constraint(m.N, rule=head_theta_0)
+
+    #Neck
+    def neck_phi_1(m,n):
+        return abs(m.x[n,5]) <= np.pi/6
+    m.neck_phi_1 = Constraint(m.N, rule=neck_phi_1)
+    def neck_theta_1(m,n):
+        return abs(m.x[n,19]) <= np.pi/6
+    m.neck_theta_1 = Constraint(m.N, rule=neck_theta_1)
+    def neck_psi_1(m,n):
+        return abs(m.x[n,33]) <= np.pi/6
+    m.neck_psi_1 = Constraint(m.N, rule=neck_psi_1)
+
+    #Front torso
+    def front_torso_theta_2(m,n):
+        return abs(m.x[n,20]) <= np.pi/6
+    m.front_torso_theta_2 = Constraint(m.N, rule=front_torso_theta_2)
+
+    #Back torso
+    def back_torso_theta_3(m,n):
+        return abs(m.x[n,21]) <= np.pi/6
+    m.back_torso_theta_3 = Constraint(m.N, rule=back_torso_theta_3)
+    # --- Back torso phi constraint - uncomment if needed! ---
+    #def back_torso_phi_3(m,n):
+        #return abs(m.x[n,7]) <= np.pi/6
+    #m.back_torso_phi_3 = Constraint(m.N, rule=back_torso_phi_3)
+    def back_torso_psi_3(m,n):
+        return abs(m.x[n,35]) <= np.pi/6
+    #m.back_torso_psi_3 = Constraint(m.N, rule=back_torso_psi_3)
+
+    #Tail base
+    def tail_base_theta_4(m,n):
+        return abs(m.x[n,22]) <= np.pi/1.5
+    m.tail_base_theta_4 = Constraint(m.N, rule=tail_base_theta_4)
+    def tail_base_psi_4(m,n):
+        return abs(m.x[n,36]) <= np.pi/1.5
+    m.tail_base_psi_4 = Constraint(m.N, rule=tail_base_psi_4)
+
+    #Tail base
+    def tail_mid_theta_5(m,n):
+        return abs(m.x[n,23]) <= np.pi/1.5
+    m.tail_mid_theta_5 = Constraint(m.N, rule=tail_mid_theta_5)
+    def tail_mid_psi_5(m,n):
+        return abs(m.x[n,37]) <= np.pi/1.5
+    m.tail_mid_psi_5 = Constraint(m.N, rule=tail_mid_psi_5)
+
+    #Front left leg
+    def l_shoulder_theta_6(m,n):
+        return abs(m.x[n,24]) <= np.pi/2
+    m.l_shoulder_theta_6 = Constraint(m.N, rule=l_shoulder_theta_6)
+    def l_front_knee_theta_7(m,n):
+        return abs(m.x[n,25] + np.pi/2) <= np.pi/2
+    m.l_front_knee_theta_7 = Constraint(m.N, rule=l_front_knee_theta_7)
+
+    #Front right leg
+    def r_shoulder_theta_8(m,n):
+        return abs(m.x[n,26]) <= np.pi/2
+    m.r_shoulder_theta_8 = Constraint(m.N, rule=r_shoulder_theta_8)
+    def r_front_knee_theta_9(m,n):
+        return abs(m.x[n,27] + np.pi/2) <= np.pi/2
+    m.r_front_knee_theta_9 = Constraint(m.N, rule=r_front_knee_theta_9)
+
+    #Back left leg
+    def l_hip_theta_10(m,n):
+        return abs(m.x[n,28]) <= np.pi/2
+    m.l_hip_theta_10 = Constraint(m.N, rule=l_hip_theta_10)
+    def l_back_knee_theta_11(m,n):
+        return abs(m.x[n,29] - np.pi/2) <= np.pi/2
+    m.l_back_knee_theta_11 = Constraint(m.N, rule=l_back_knee_theta_11)
+
+    #Back right leg
+    def r_hip_theta_12(m,n):
+        return abs(m.x[n,30]) <= np.pi/2
+    m.r_hip_theta_12 = Constraint(m.N, rule=r_hip_theta_12)
+    def r_back_knee_theta_13(m,n):
+        return abs(m.x[n,31] - np.pi/2) <= np.pi/2
+    m.r_back_knee_theta_13 = Constraint(m.N, rule=r_back_knee_theta_13)
+
+    # ======= OBJECTIVE FUNCTION =======
     def obj(m):
         slack_model_err = 0.0
         slack_meas_err = 0.0
-        for n in range(1, N+1):
+
+        for n in m.N:
             #Model Error
-            for p in range(1, P+1):
+            for p in m.P:
                 slack_model_err += m.model_err_weight[p] * m.slack_model[n, p] ** 2
             #Measurement Error
-            for l in range(1, L+1):
-                for c in range (1, C+1):
-                    for d2 in range(1, D2+1):
-                        if n-1 >= 20 and n-1 < 30:
-                            slack_meas_err += redescending_loss(1/30 * m.slack_meas[n, c, l, d2], 3, 5, 15)
-                        else:
-                            slack_meas_err += redescending_loss(m.meas_err_weight[n, c, l] * m.slack_meas[n, c, l, d2], 3, 10, 20)
+            for l in m.L:
+                for c in m.C:
+                    for d2 in m.D2:
+                        slack_meas_err += redescending_loss(m.meas_err_weight[n, c, l] * m.slack_meas[n, c, l, d2], 3, 7, 20)
         return slack_meas_err + slack_model_err
 
     m.obj = Objective(rule = obj)
 
-    return(m, pose_to_3d)
+    return m, pose_to_3d
 
 def solve_optimisation(model, exe_path, project_dir, poses) -> None:
     """
@@ -422,19 +581,20 @@ def solve_optimisation(model, exe_path, project_dir, poses) -> None:
     opt.options["OF_print_timing_statistics"] = "yes"
     opt.options["OF_print_frequency_iter"] = 10
     opt.options["OF_hessian_approximation"] = "limited-memory"
-    #opt.options["linear_solver"] = "ma86"
+    opt.options["linear_solver"] = "ma86"
 
-    LOG_DIR = 'C://Users//user-pc//Documents//Scripts//FYP//logs'
+    LOG_DIR = '/Users/zico/msc/dev/FYP/logs'
 
     # --- This step may take a while! ---
     results = opt.solve(
-        model, tee=True, 
-        keepfiles=True, 
+        model, tee=True,
+        keepfiles=True,
         logfile=os.path.join(LOG_DIR, "solver.log")
     )
 
     result_dir = os.path.join(project_dir, "results")
     save_data(model, file_path=os.path.join(result_dir, 'traj_results.pickle'), poses=poses)
+    generate_plotting_data(project_dir, model, poses)
 
 #def save_data(file_data, filepath, dict=False):
     #if dict:
@@ -457,7 +617,7 @@ def convert_to_dict(m, poses) -> Dict:
 
     print(poses)
     print(x_optimised)
-    
+
     positions = np.array([poses(*states) for states in x_optimised])
     file_data = dict(
         positions=positions,
@@ -468,15 +628,15 @@ def convert_to_dict(m, poses) -> Dict:
     return file_data
 
 def save_data(file_data, file_path, poses, dict=True) -> None:
-    
+
     if dict:
         file_data = convert_to_dict(file_data, poses)
-        
+
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
     with open(file_path, 'wb') as f:
         pickle.dump(file_data, f)
-    
+
     print(f'save {file_path}')
 
 # --- OUTLIER REJECTING COST FUNCTION (REDESCENDING LOSS) ---
@@ -486,7 +646,7 @@ def func_step(start, x):
 
 def func_piece(start, end, x):
         return func_step(start, x) - func_step(end, x)
-    
+
 def redescending_loss(err, a, b, c):
     e = abs(err)
     cost = 0.0
@@ -564,7 +724,7 @@ def pt3d_to_2d(x, y, z, K, D, R, t):
     a = x_2d/z_2d
     b = y_2d/z_2d
     #fisheye params
-    r = (a**2 + b**2 +1e-12)**0.5 
+    r = (a**2 + b**2 +1e-12)**0.5
     th = atan(r)
     #distortion
     th_D = th * (1 + D[0]*th**2 + D[1]*th**4 + D[2]*th**6 + D[3]*th**8)
@@ -583,7 +743,6 @@ def pt3d_to_y2d(x, y, z, K, D, R, t):
     return v
 
 if __name__ == "__main__":
-    skelly = load_skeleton("C://Users//user-pc//Documents//Scripts//FYP//skeletons//cheetah_serious.pickle")
-    print(skelly)
-    model1, pose3d = build_model(skelly, "C://Users//user-pc//Documents//Scripts//FYP//data")
-    solve_optimisation(model1, exe_path="C://Users//user-pc//anaconda3//pkgs//ipopt-3.11.1-2//Library//bin//ipopt.exe", project_dir="C://Users//user-pc//Documents//Scripts//FYP//data", poses=pose3d)
+    project_dir = "/Users/zico/msc/dev/FYP/data/09_03_2019/lily/run"
+    model, pose3d = build_model(project_dir)
+    solve_optimisation(model, exe_path=None, project_dir=project_dir, poses=pose3d)

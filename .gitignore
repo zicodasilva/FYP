@@ -3,6 +3,7 @@
 .vscode
 __pycache__
 .__MACOSX
+logs
 
 # files to ignore
 .DS_STORE
