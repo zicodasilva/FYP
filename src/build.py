@@ -47,6 +47,7 @@ def load_data(file) -> Dict:
 
 def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
     #SYMBOLIC ROTATION MATRIX FUNCTIONS
+    print("Generate and load data...")
 
     L = 14  #number of joints in the cheetah model
 
@@ -169,7 +170,6 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
     "l_hip", "l_back_knee", "l_back_ankle",
     "r_hip", "r_back_knee", "r_back_ankle"
     ]))
-    print("Loading data")
 
     df_paths = sorted(glob.glob(os.path.join(project_dir, '*.h5')))
     points_2d_df = utils.create_dlc_points_2d_file(df_paths)
@@ -192,8 +192,8 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
     # Parameters
 
     h = 1/120 #timestep
-    end_frame = 180
-    start_frame = 40
+    end_frame = 150
+    start_frame = 50
     N = end_frame-start_frame # N > start_frame !!
     P = 3 + len(phi)+len(theta)+len(psi)
     L = len(pos_funcs)
@@ -203,7 +203,34 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
 
     proj_funcs = [pt3d_to_x2d, pt3d_to_y2d]
 
-    R = 5 # measurement standard deviation
+    # measurement standard deviation
+    R = np.array([
+        1.24,
+        1.18,
+        1.2,
+        2.08,
+        2.04,
+        2.52,
+        2.73,
+        1.83,
+        3.4,
+        2.91,
+        2.85,
+        # 2.27, # l_front_paw
+        3.47,
+        2.75,
+        2.69,
+        # 2.24, # r_front_paw
+        3.53,
+        2.69,
+        2.49,
+        # 2.34, # l_back_paw
+        3.26,
+        2.76,
+        2.33,
+        # 2.4, # r_back_paw
+    ])
+    # R = np.repeat(5, len(R))
     Q = np.array([ # model parameters variance
         4.0,
         7.0,
@@ -268,7 +295,7 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
     print(x_est.shape)
     psi_est = np.arctan2(y_slope, x_slope)
 
-    print("Started Optimisation")
+    print("Build optimisation problem - Start")
     m = ConcreteModel(name = "Skeleton")
 
     # ===== SETS =====
@@ -282,7 +309,7 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
     def init_meas_weights(model, n, c, l):
         likelihood = get_likelihood_from_df(n+start_frame, c, l)
         if likelihood > dlc_thresh:
-            return 1/R
+            return 1/R[l-1]
         else:
             return 0
     m.meas_err_weight = Param(m.N, m.C, m.L, initialize=init_meas_weights, mutable=True)  # IndexError: index 0 is out of bounds for axis 0 with size 0
@@ -563,6 +590,8 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
         return slack_meas_err + slack_model_err
 
     m.obj = Objective(rule = obj)
+
+    print("Build optimisation problem - End")
 
     return m, pose_to_3d
 
