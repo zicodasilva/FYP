@@ -37,9 +37,6 @@ def generate_plotting_data(results_dir: str, scene_file: str, m: ConcreteModel, 
     print(f"saved plot_data.npy\n")
 
 def load_data(file) -> Dict:
-    """
-    Loads a skeleton dictionary from a saved skeleton .pickle file
-    """
     with open(file, 'rb') as handle:
         data = pickle.load(handle)
 
@@ -192,7 +189,7 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
     # Parameters
 
     h = 1/120 #timestep
-    end_frame = 150
+    end_frame = 165
     start_frame = 50
     N = end_frame-start_frame # N > start_frame !!
     P = 3 + len(phi)+len(theta)+len(psi)
@@ -200,6 +197,7 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
     C = len(K_arr)
     D2 = 2
     D3 = 3
+    W = 2
 
     proj_funcs = [pt3d_to_x2d, pt3d_to_y2d]
 
@@ -230,7 +228,7 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
         2.33,
         # 2.4, # r_back_paw
     ])
-    # R = np.repeat(5, len(R))
+    R_pw = np.repeat(7, len(R))
     Q = np.array([ # model parameters variance
         4.0,
         7.0,
@@ -305,6 +303,7 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
     m.C = RangeSet(C) #number of cameras
     m.D2 = RangeSet(D2) #dimensionality of measurements
     m.D3 = RangeSet(D3) #dimensionality of measurements
+    m.W = RangeSet(W) # Number of pairwise terms to include.
 
     def init_meas_weights(model, n, c, l):
         likelihood = get_likelihood_from_df(n+start_frame, c, l)
@@ -313,6 +312,15 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
         else:
             return 0
     m.meas_err_weight = Param(m.N, m.C, m.L, initialize=init_meas_weights, mutable=True)  # IndexError: index 0 is out of bounds for axis 0 with size 0
+
+    def init_pw_meas_weights(model, n, c, l):
+        likelihood = get_likelihood_from_df(n+start_frame, c, l)
+        if likelihood <= dlc_thresh:
+            return 1/R_pw[l-1]
+        else:
+            return 0
+    m.meas_pw_err_weight = Param(m.N, m.C, m.L, initialize=init_pw_meas_weights, mutable=True)  # IndexError: index 0 is out of bounds for axis 0 with size 0
+
 
     def init_model_weights(m, p):
         if Q[p-1] != 0.0:
@@ -330,38 +338,30 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
     # resultsfilename='C://Users//user-pc//Desktop//pwpoints.pickle'
     # with open(resultsfilename, 'rb') as f:
     #         data=pickle.load(f)
+    pw_data = {}
+    for cam in range(C):
+        pw_data[cam] = load_data(f"/Users/zico/msc/dev/FYP/data/09_03_2019/lily/run/cam{cam+1}-predictions.pickle")
 
     index_dict = {"nose":23, "r_eye":0, "l_eye":1, "neck_base":24, "spine":6, "tail_base":22, "tail1":11,
      "tail2":12, "l_shoulder":13,"l_front_knee":14,"l_front_ankle":15,"r_shoulder":2,
       "r_front_knee":3, "r_front_ankle":4,"l_hip":17,"l_back_knee":18, "l_back_ankle":19,
        "r_hip":7,"r_back_knee":8,"r_back_ankle":9}
 
-    pair_dict = {"nose":[0,1,24], "neck_base":[6,13,2], "spine":[24,22], "tail_base":[6,7,17], "tail1":[22,12],
-     "tail2":[11,22], "l_shoulder":[24,14],"l_front_knee":[13,15],"l_front_ankle":[14,16],"r_shoulder":[24,3],
-      "r_front_knee":[2,4], "r_front_ankle":[3,5],"l_hip":[18,22],"l_back_knee":[17,19], "l_back_ankle":[18,20],
-       "r_hip":[8,22],"r_back_knee":[7,9],"r_back_ankle":[8,10]}
+    pair_dict = {"r_eye":[23, 24], "l_eye":[23, 24], "nose":[6, 24], "neck_base":[6, 23], "spine":[22, 24], "tail_base":[6, 11], "tail1":[6, 22],
+     "tail2":[11, 22], "l_shoulder":[6, 24],"l_front_knee":[6, 24],"l_front_ankle":[6, 24],"r_shoulder":[6, 24],
+      "r_front_knee":[6, 24], "r_front_ankle":[6, 24],"l_hip":[6, 22],"l_back_knee":[6, 22], "l_back_ankle":[6, 22],
+       "r_hip":[6, 22],"r_back_knee":[6, 22],"r_back_ankle":[6, 22]}
 
 
-    # def init_pw_measurements(m, n, c, l, d2):
-    #     val=0
-    #     if n-1 >= 20 and n-1 < 30:
-    #         fn = 10*(c-1)+(n-20)-1
-    #         x=data[fn]['pose'][0::3]
-    #         y=data[fn]['pose'][1::3]
-    #         xpw=data[fn]['pws'][:,:,:,0]
-    #         ypw=data[fn]['pws'][:,:,:,1]
-    #         marker = markers[l-1]
-    #         base = pair_dict[marker][1]
-    #         if d2==1:
-    #             val=x[base]+xpw[0,base,index_dict[marker]]
-    #         elif d2==2:
-    #             val=y[base]+ypw[0,base,index_dict[marker]]
-    #             #sum/=len(pair_dict[marker])
-    #         return val
-    #     else:
-    #         return get_meas_from_df(n+start_frame, c, l, d2)
+    def init_pw_measurements(m, n, c, l, d2, w):
+        pw_values = pw_data[c-1][n+start_frame]
+        marker = markers[l-1]
+        base = pair_dict[marker][w-1]
+        val = pw_values['pose'][d2-1::3]
+        val_pw = pw_values['pws'][:,:,:,d2-1]
 
-    # m.pw_meas = Param(m.N, m.C, m.L, m.D2, initialize=init_pw_measurements, within=Any)
+        return val[base]+val_pw[0,base,index_dict[marker]]
+    m.pw_meas = Param(m.N, m.C, m.L, m.D2, m.W, initialize=init_pw_measurements, within=Any)
     """
     def init_pw_measurements2(m, n, c, l, d2):
         val=0
@@ -392,6 +392,7 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
     m.poses = Var(m.N, m.L, m.D3)
     m.slack_model = Var(m.N, m.P)
     m.slack_meas = Var(m.N, m.C, m.L, m.D2, initialize=0.0)
+    m.slack_pw_meas = Var(m.N, m.C, m.L, m.D2, m.W, initialize=0.0)
 
 
     # ===== VARIABLES INITIALIZATION =====
@@ -446,11 +447,6 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
             return Constraint.Skip
     m.integrate_v = Constraint(m.N, m.P, rule = backwards_euler_vel)
 
-    # m.angs = ConstraintList()
-    # for n in range(1,N):
-    #     for i in range(3, 3*len(positions)):
-    #         m.angs.add(expr=(abs(m.x[n,i]) <= np.pi/2))
-
     # MODEL
     def constant_acc(m, n, p):
         if n > 1:
@@ -467,15 +463,12 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
         return proj_funcs[d2-1](x, y, z, K, D, R, t) - m.meas[n, c, l, d2] - m.slack_meas[n, c, l, d2] ==0
     m.measurement = Constraint(m.N, m.C, m.L, m.D2, rule = measurement_constraints)
 
-    # def pw_measurement_constraints(m, n, c, l, d2):
-    #     #project
-    #     if n-1 >= 20 and n-1 < 30:
-    #         K, D, R, t = K_arr[c-1], D_arr[c-1], R_arr[c-1], t_arr[c-1]
-    #         x, y, z = m.poses[n,l,1], m.poses[n,l,2], m.poses[n,l,3]
-    #         return proj_funcs[d2-1](x, y, z, K, D, R, t) - m.pw_meas[n, c, l, d2] - m.slack_meas[n, c, l, d2] ==0.0
-    #     else:
-    #         return(Constraint.Skip)
-    # m.pw_measurement = Constraint(m.N, m.C, m.L, m.D2, rule = pw_measurement_constraints)
+    def pw_measurement_constraints(m, n, c, l, d2, w):
+        #project
+        K, D, R, t = K_arr[c-1], D_arr[c-1], R_arr[c-1], t_arr[c-1]
+        x, y, z = m.poses[n,l,1], m.poses[n,l,2], m.poses[n,l,3]
+        return proj_funcs[d2-1](x, y, z, K, D, R, t) - m.pw_meas[n, c, l, d2, w] - m.slack_pw_meas[n, c, l, d2, w] ==0.0
+    m.pw_measurement = Constraint(m.N, m.C, m.L, m.D2, m.W, rule = pw_measurement_constraints)
     """
     def pw_measurement_constraints2(m, n, c, l, d2):
         #project
@@ -577,6 +570,7 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
     def obj(m):
         slack_model_err = 0.0
         slack_meas_err = 0.0
+        slack_pw_meas_err = 0.0
 
         for n in m.N:
             #Model Error
@@ -586,7 +580,9 @@ def build_model(project_dir, dlc_thresh=0.5) -> Tuple[ConcreteModel, Dict]:
             for l in m.L:
                 for c in m.C:
                     for d2 in m.D2:
-                        slack_meas_err += misc.redescending_loss(m.meas_err_weight[n, c, l] * m.slack_meas[n, c, l, d2], 3, 10, 20)
+                        slack_meas_err += misc.redescending_loss(m.meas_err_weight[n, c, l] * m.slack_meas[n, c, l, d2], 3, 7, 20)
+                        for w in m.W:
+                            slack_meas_err += misc.redescending_loss(m.meas_pw_err_weight[n, c, l] * m.slack_pw_meas[n, c, l, d2, w], 3, 7, 20)
         return slack_meas_err + slack_model_err
 
     m.obj = Objective(rule = obj)
@@ -606,7 +602,7 @@ def solve_optimisation(model, exe_path = None) -> None:
 
     # solver options
     opt.options["print_level"] = 5
-    opt.options["max_iter"] = 400
+    opt.options["max_iter"] = 500
     opt.options["max_cpu_time"] = 3600
     opt.options["tol"] = 1e-1
     opt.options["OF_print_timing_statistics"] = "yes"
@@ -617,18 +613,13 @@ def solve_optimisation(model, exe_path = None) -> None:
     LOG_DIR = '/Users/zico/msc/dev/FYP/logs'
 
     # --- This step may take a while! ---
+    print("Optimisation - Start")
     opt.solve(
         model, tee=True,
         keepfiles=True,
         logfile=os.path.join(LOG_DIR, "solver.log")
     )
-
-#def save_data(file_data, filepath, dict=False):
-    #if dict:
-        #file_data = convert_to_dict(file_data)
-
-    #with open(filepath, 'wb') as f:
-        #pickle.dump(file_data, f)
+    print("Optimisation - End")
 
 def save_results(model, poses, project_dir: str, dlc_thresh=0.5) -> None:
     result_dir = os.path.join(project_dir, "results")
@@ -640,7 +631,7 @@ def save_results(model, poses, project_dir: str, dlc_thresh=0.5) -> None:
         x.append([value(model.x[n, p]) for p in model.P])
         dx.append([value(model.dx[n, p]) for p in model.P])
         ddx.append([value(model.ddx[n, p]) for p in model.P])
-    # save_fte(dict(x=x, dx=dx, ddx=ddx), result_dir, scene_path, 50, dlc_thresh)
+    save_fte(dict(x=x, dx=dx, ddx=ddx), result_dir, scene_path, 50, dlc_thresh)
 
 def convert_to_dict(m, poses) -> Dict:
     x_optimised = []
@@ -737,11 +728,21 @@ def rot_z(z):
 def save_fte(states, out_dir, scene_fpath, start_frame, dlc_thresh, save_videos=True):
     positions = [misc.get_3d_marker_coords(state) for state in states['x']]
     out_fpath = os.path.join(out_dir, f"fte.pickle")
+    markers = dict(enumerate([
+    "l_eye", "r_eye", "nose",
+    "neck_base", "spine",
+    "tail_base", "tail1", "tail2",
+    "l_shoulder", "l_front_knee", "l_front_ankle",
+    "r_shoulder", "r_front_knee", "r_front_ankle",
+    "l_hip", "l_back_knee", "l_back_ankle",
+    "r_hip", "r_back_knee", "r_back_ankle"
+    ]))
+
     utility.save_optimised_cheetah(positions, out_fpath, extra_data=dict(**states, start_frame=start_frame))
-    utility.save_3d_cheetah_as_2d(positions, out_dir, scene_fpath, misc.get_markers(), calib.project_points_fisheye, start_frame)
+    utility.save_3d_cheetah_as_2d(positions, out_dir, scene_fpath, markers, calib.project_points_fisheye, start_frame)
 
     if save_videos:
-        video_fpaths = glob.glob(os.path.join(os.path.dirname(out_dir), 'cam[1-9].mp4')) # original vids should be in the parent dir
+        video_fpaths = sorted(glob.glob(os.path.join(os.path.dirname(out_dir), 'cam[1-9].mp4'))) # original vids should be in the parent dir
         create_labeled_videos(video_fpaths, out_dir=out_dir, draw_skeleton=True, pcutoff=dlc_thresh)
 
 def create_labeled_videos(video_fpaths, videotype="mp4", codec="mp4v", outputframerate=None, out_dir=None, draw_skeleton=False, pcutoff=0.5, dotsize=6, colormap='jet', skeleton_color='white'):
@@ -750,7 +751,16 @@ def create_labeled_videos(video_fpaths, videotype="mp4", codec="mp4v", outputfra
 
     print('Saving labeled videos...')
 
-    bodyparts = misc.get_markers()
+    # bodyparts = misc.get_markers()
+    bodyparts = dict(enumerate([
+    "l_eye", "r_eye", "nose",
+    "neck_base", "spine",
+    "tail_base", "tail1", "tail2",
+    "l_shoulder", "l_front_knee", "l_front_ankle",
+    "r_shoulder", "r_front_knee", "r_front_ankle",
+    "l_hip", "l_back_knee", "l_back_ankle",
+    "r_hip", "r_back_knee", "r_back_ankle"
+    ]))
     bodyparts2connect = misc.get_skeleton() if draw_skeleton else None
 
     if not video_fpaths:
@@ -769,7 +779,6 @@ def create_labeled_videos(video_fpaths, videotype="mp4", codec="mp4v", outputfra
 
 if __name__ == "__main__":
     project_dir = "/Users/zico/msc/dev/FYP/data/09_03_2019/lily/run"
-    print("Start building model...")
     model, pose3d = build_model(project_dir)
     solve_optimisation(model)
     save_results(model, pose3d, project_dir)
